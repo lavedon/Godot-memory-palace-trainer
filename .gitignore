@@ -1,0 +1,15 @@
+.godot/
+.tools/
+artifacts/
+**/bin/
+**/obj/
+*.user
+*.db
+*.db-shm
+*.db-wal
+.graphify_cache/
+graphify-out/cache/
+graphify-out/.graphify_python
+graphify-out/.graphify_sitepackages
+graphify-out/.graphify_root
+Core/*.cs.uid

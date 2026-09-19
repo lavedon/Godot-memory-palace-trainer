@@ -1,0 +1,17 @@
+{
+  "CONTEXT.md": {
+    "mtime": 1789841936.731827,
+    "ast_hash": "632416d0abf0c0fb708250792d3e49fe",
+    "semantic_hash": "632416d0abf0c0fb708250792d3e49fe"
+  },
+  "docs/adr/0001-csharp-godot-reads-palace-db-directly.md": {
+    "mtime": 1789841598.0574956,
+    "ast_hash": "6e03ef14d0e7f0825ef4271a425b3379",
+    "semantic_hash": "6e03ef14d0e7f0825ef4271a425b3379"
+  },
+  "room-loci.md": {
+    "mtime": 1789841950.9644396,
+    "ast_hash": "484082ad67c8d278a8df64483f5e2bed",
+    "semantic_hash": "484082ad67c8d278a8df64483f5e2bed"
+  }
+}

@@ -1,0 +1,232 @@
+{
+  "communities": {
+    "0": [
+      "context_orientation",
+      "room_loci_build_order",
+      "room_loci_coordinate_convention",
+      "room_loci_demo",
+      "room_loci_duplicates",
+      "room_loci_front_cue",
+      "room_loci_full_acceptance",
+      "room_loci_overflow_acceptance",
+      "room_loci_rectangle",
+      "room_loci_snapshot",
+      "room_loci_title",
+      "room_loci_valid_positions",
+      "room_loci_wall_mapping",
+      "room_loci_warnings"
+    ],
+    "1": [
+      "adr_0001_csharp_godot_reads_palace_db_directly_adr_addendum",
+      "adr_0001_csharp_godot_reads_palace_db_directly_architecture",
+      "adr_0001_csharp_godot_reads_palace_db_directly_external_path",
+      "adr_0001_csharp_godot_reads_palace_db_directly_godot_dotnet",
+      "adr_0001_csharp_godot_reads_palace_db_directly_nuget_native",
+      "adr_0001_csharp_godot_reads_palace_db_directly_rejected",
+      "adr_0001_csharp_godot_reads_palace_db_directly_toolchain",
+      "context_position22",
+      "context_precedence",
+      "room_loci_db_arg",
+      "room_loci_export_acceptance",
+      "room_loci_historical_wording",
+      "room_loci_plan_addendum"
+    ],
+    "2": [
+      "context_anchor",
+      "context_position",
+      "context_slice",
+      "context_wall_slot",
+      "room_loci_empty_room",
+      "room_loci_gaps",
+      "room_loci_partial_acceptance"
+    ],
+    "3": [
+      "room_loci_control_tuning",
+      "room_loci_controls_acceptance",
+      "room_loci_floor_ceiling",
+      "room_loci_full_text",
+      "room_loci_mouse",
+      "room_loci_visual_checks",
+      "room_loci_walking"
+    ],
+    "4": [
+      "adr_0001_csharp_godot_reads_palace_db_directly_read_only",
+      "room_loci_database_unchanged",
+      "room_loci_errors",
+      "room_loci_errors_acceptance",
+      "room_loci_fixtures",
+      "room_loci_schema_reference"
+    ],
+    "5": [
+      "context_locus",
+      "context_palace",
+      "context_peg",
+      "context_room",
+      "context_viewer_capacity",
+      "room_loci_scope_deferred"
+    ],
+    "6": [
+      "context_billboard",
+      "room_loci_j_toggle",
+      "room_loci_k_toggle",
+      "room_loci_label3d",
+      "room_loci_text_offset"
+    ],
+    "7": [
+      "adr_0001_csharp_godot_reads_palace_db_directly_parameterization",
+      "adr_0001_csharp_godot_reads_palace_db_directly_snapshot_load",
+      "room_loci_room_arg"
+    ]
+  },
+  "cohesion": {
+    "0": 0.24175824175824176,
+    "1": 0.1794871794871795,
+    "2": 0.38095238095238093,
+    "3": 0.38095238095238093,
+    "4": 0.3333333333333333,
+    "5": 0.3333333333333333,
+    "6": 0.4,
+    "7": 0.6666666666666666
+  },
+  "labels": {
+    "0": "Room layout and validation",
+    "1": "Architecture and Windows deployment",
+    "2": "Stable Position identities",
+    "3": "Walking and visual acceptance",
+    "4": "Safe loading and fixtures",
+    "5": "Domain and deferred scope",
+    "6": "Independent text and markers",
+    "7": "Room snapshot queries"
+  },
+  "gods": [
+    {
+      "id": "room_loci_demo",
+      "label": "Single Room Windows demo",
+      "degree": 35
+    },
+    {
+      "id": "context_anchor",
+      "label": "Fixed Anchors and faint markers",
+      "degree": 7
+    },
+    {
+      "id": "context_position",
+      "label": "Stable Position identity",
+      "degree": 5
+    },
+    {
+      "id": "context_billboard",
+      "label": "Billboard",
+      "degree": 5
+    },
+    {
+      "id": "room_loci_controls_acceptance",
+      "label": "Movement and text-toggle acceptance",
+      "degree": 5
+    },
+    {
+      "id": "adr_0001_csharp_godot_reads_palace_db_directly_architecture",
+      "label": "Godot .NET with direct SQLite",
+      "degree": 5
+    },
+    {
+      "id": "context_locus",
+      "label": "Locus",
+      "degree": 4
+    },
+    {
+      "id": "room_loci_warnings",
+      "label": "Visible skipped-Loci warnings",
+      "degree": 4
+    },
+    {
+      "id": "room_loci_gaps",
+      "label": "Preserve missing Positions",
+      "degree": 4
+    },
+    {
+      "id": "room_loci_database_unchanged",
+      "label": "Shared database unchanged",
+      "degree": 4
+    }
+  ],
+  "surprises": [
+    {
+      "source": "Exact wall Position diagrams",
+      "target": "Stable Position identity",
+      "source_files": [
+        "room-loci.md",
+        "CONTEXT.md"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "locates",
+      "why": "connects across different repos/directories; bridges separate communities"
+    },
+    {
+      "source": "Centered floor and ceiling Anchors",
+      "target": "Fixed Anchors and faint markers",
+      "source_files": [
+        "room-loci.md",
+        "CONTEXT.md"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "locates",
+      "why": "connects across different repos/directories; bridges separate communities"
+    },
+    {
+      "source": "K toggles numbered markers",
+      "target": "Fixed Anchors and faint markers",
+      "source_files": [
+        "room-loci.md",
+        "CONTEXT.md"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "toggles_markers",
+      "why": "connects across different repos/directories; bridges separate communities"
+    },
+    {
+      "source": "Inward text offsets",
+      "target": "Fixed Anchors and faint markers",
+      "source_files": [
+        "room-loci.md",
+        "CONTEXT.md"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "preserves",
+      "why": "connects across different repos/directories; bridges separate communities"
+    },
+    {
+      "source": "Full wrapped readable text",
+      "target": "Billboard",
+      "source_files": [
+        "room-loci.md",
+        "CONTEXT.md"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "requires_readability",
+      "why": "connects across different repos/directories; bridges separate communities"
+    }
+  ],
+  "questions": [
+    {
+      "type": "bridge_node",
+      "question": "Why does `Single Room Windows demo` connect `Room layout and validation` to `Architecture and Windows deployment`, `Stable Position identities`, `Walking and visual acceptance`, `Safe loading and fixtures`, `Domain and deferred scope`, `Independent text and markers`, `Room snapshot queries`?",
+      "why": "High betweenness centrality (0.803) - this node is a cross-community bridge."
+    },
+    {
+      "type": "bridge_node",
+      "question": "Why does `Godot .NET with direct SQLite` connect `Architecture and Windows deployment` to `Safe loading and fixtures`?",
+      "why": "High betweenness centrality (0.208) - this node is a cross-community bridge."
+    },
+    {
+      "type": "bridge_node",
+      "question": "Why does `Standalone Windows export acceptance` connect `Architecture and Windows deployment` to `Room layout and validation`?",
+      "why": "High betweenness centrality (0.179) - this node is a cross-community bridge."
+    },
+    {
+      "type": "isolated_nodes",
+      "question": "What connects `Palace`, `Horizontal Slices`, `Viewer capacity is 26 Positions` to the rest of the system?",
+      "why": "8 weakly-connected nodes found - possible documentation gaps or missing edges."
+    }
+  ]
+}

@@ -1,0 +1,124 @@
+using System.Numerics;
+using System.Security.Cryptography;
+using Microsoft.Data.Sqlite;
+using PalaceRoomViewer.Core;
+
+var directory = args.Length > 0 ? Path.GetFullPath(args[0]) : Path.Combine(Path.GetTempPath(), "PalaceRoomViewer-tests", Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(directory);
+var fixture = Path.Combine(directory, "acceptance.db");
+if (File.Exists(fixture)) throw new InvalidOperationException("Use a new fixture directory; existing databases are never overwritten.");
+var failures = new List<string>();
+var count = 0;
+void Check(bool value, string message) { if (!value) throw new Exception(message); }
+void Test(string name, Action test)
+{
+    count++;
+    try { test(); Console.WriteLine($"PASS {name}"); }
+    catch (Exception ex) { failures.Add(name); Console.Error.WriteLine($"FAIL {name}: {ex.Message}"); }
+}
+void Fails(Action test, string contains)
+{
+    try { test(); } catch (ViewerException ex) { Check(ex.Message.Contains(contains, StringComparison.OrdinalIgnoreCase), ex.Message); return; }
+    throw new Exception("Expected a visible ViewerException");
+}
+void Execute(SqliteConnection connection, string sql)
+{
+    using var command = connection.CreateCommand(); command.CommandText = sql; command.ExecuteNonQuery();
+}
+using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = fixture, Pooling = false }.ToString()))
+{
+    connection.Open();
+    Execute(connection, """
+        CREATE TABLE Rooms (Id INTEGER PRIMARY KEY, Title TEXT);
+        CREATE TABLE Loci (Id INTEGER PRIMARY KEY, RoomId INTEGER, Position, Text);
+        INSERT INTO Rooms VALUES (8, 'The complete Room'), (7, 'Overflow Room'), (20, 'Gaps stay put'),
+          (21, 'Empty Room'), (22, 'Invalid Positions'), (23, 'Long text'), (24, NULL), (25, 'Invalid text');
+        INSERT INTO Loci VALUES (2001,20,1,'First'), (2010,20,10,'Anchor ten'), (2026,20,26,'Ceiling');
+        INSERT INTO Loci VALUES (2201,22,1,'Lowest Id wins'), (2202,22,1,'Duplicate'),
+          (2203,22,NULL,'No Position'), (2204,22,27,'Above capacity'), (2205,22,0,'Zero'),
+          (2206,22,-4,'Negative'), (2207,22,2.5,'Fraction'), (2208,22,'3','String'),
+          (2209,22,9223372036854775807,'Very large'), (2210,22,10,'Keep this Position');
+        INSERT INTO Loci VALUES (2501,25,1,NULL);
+        """);
+    for (var room = 7; room <= 8; room++)
+        for (var position = 1; position <= (room == 7 ? 29 : 26); position++)
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = "INSERT INTO Loci(Id,RoomId,Position,Text) VALUES (@id,@room,@position,@text)";
+            command.Parameters.AddWithValue("@id", room * 100 + position);
+            command.Parameters.AddWithValue("@room", room);
+            command.Parameters.AddWithValue("@position", position);
+            command.Parameters.AddWithValue("@text", $"Position {position}: {RoomLayout.Description(Math.Min(position,26))}. A memorable idea belongs at this fixed Anchor.");
+            command.ExecuteNonQuery();
+        }
+    using var longCommand = connection.CreateCommand();
+    longCommand.CommandText = "INSERT INTO Loci VALUES (2301,23,1,@text),(2325,23,25,@text),(2326,23,26,@text)";
+    longCommand.Parameters.AddWithValue("@text", string.Concat(Enumerable.Repeat("A longer wrapping sample preserves every word, including punctuation, Unicode café, 日本語, and a journey across the Room. ", 12)));
+    longCommand.ExecuteNonQuery();
+}
+var repository = new RoomRepository();
+RoomSnapshot Load(long id) => repository.Load(new ViewerOptions(id, fixture));
+var before = SHA256.HashData(File.ReadAllBytes(fixture));
+
+Test("Required Room ID", () => Fails(() => ViewerOptions.Parse([]), "--room"));
+Test("Default database", () => Check(ViewerOptions.Parse(["--room","8"]).DatabasePath == ViewerOptions.DefaultDatabasePath, "default path"));
+Test("Database override and order", () => Check(ViewerOptions.Parse(["--db", "a path;with spaces.db", "--room", "8"]) == new ViewerOptions(8, "a path;with spaces.db"), "options"));
+foreach (var invalid in new[] { "0", "-2", "x", "8.5", "9223372036854775808", "8 OR 1=1" })
+    Test($"Reject Room ID {invalid}", () => Fails(() => ViewerOptions.Parse(["--room", invalid]), "Invalid Room ID"));
+Test("Missing option value", () => Fails(() => ViewerOptions.Parse(["--room"]), "value"));
+Test("Next option is not a value", () => Fails(() => ViewerOptions.Parse(["--room","--db","x"]), "value"));
+Test("Unknown option", () => Fails(() => ViewerOptions.Parse(["--rom","8"]), "Unknown"));
+Test("Duplicate Room argument", () => Fails(() => ViewerOptions.Parse(["--room","8","--room","7"]), "once"));
+Test("Duplicate database argument", () => Fails(() => ViewerOptions.Parse(["--room","8","--db","a","--db","b"]), "once"));
+Test("Empty database argument", () => Fails(() => ViewerOptions.Parse(["--room","8","--db"," "]), "empty"));
+Test("All 26 Positions load", () => { var room = Load(8); Check(room.Title == "The complete Room" && room.Loci.Count == 26 && room.Warnings.Count == 0, "full Room"); });
+Test("Overflow warns by Locus identity", () => { var room = Load(7); Check(room.Loci.Count == 26 && room.Warnings.Select(w => w.LocusId).SequenceEqual(new long[] {727,728,729}), "overflow warning identities"); });
+Test("Gaps preserve identity", () => Check(Load(20).Loci.Keys.SequenceEqual(new[] {1,10,26}), "gaps must remain empty"));
+Test("Empty differs from missing", () => { Check(Load(21).Loci.Count == 0, "empty Room"); Fails(() => Load(9999), "does not exist"); });
+Test("Invalid Positions do not block good Loci", () => { var room = Load(22); Check(room.Loci.Count == 2 && room.Loci[1].Id == 2201 && room.Loci[10].Id == 2210 && room.Warnings.Count == 8, "validation"); });
+Test("Duplicate lowest Id wins", () => Check(Load(22).Warnings.Single(w => w.LocusId == 2202).Reason.Contains("2201"), "duplicate owner"));
+Test("Full long Unicode text preserved", () => Check(Load(23).Loci[25].Text.Length > 1200 && Load(23).Loci[25].Text.Contains("日本語"), "no truncation"));
+Test("Invalid Title visible", () => Fails(() => Load(24), "Title"));
+Test("Invalid Text visible", () => Fails(() => Load(25), "Text"));
+Test("Missing path creates no database", () => { var absent = Path.Combine(directory,"never-created.db"); Fails(() => repository.Load(new(8,absent)), "does not exist"); Check(!File.Exists(absent), "must not create"); });
+Test("Connection string characters are escaped", () => { var path = Path.Combine(directory,"a;b 'quoted' database.db"); File.Copy(fixture,path); Check(repository.Load(new(8,path)).Loci.Count == 26, "safe connection builder"); });
+var badSchema = Path.Combine(directory, "bad-schema.db");
+using (var connection = new SqliteConnection($"Data Source={badSchema};Pooling=False")) { connection.Open(); Execute(connection,"CREATE TABLE Unrelated(Id INTEGER)"); }
+Test("Incompatible schema visible", () => Fails(() => repository.Load(new(8,badSchema)), "schema"));
+var corrupt = Path.Combine(directory, "corrupt.db"); File.WriteAllText(corrupt,"This is not SQLite.");
+Test("Corrupt database visible", () => Fails(() => repository.Load(new(8,corrupt)), "not a SQLite"));
+Test("Exclusive lock reports useful failure", () =>
+{
+    using var connection = new SqliteConnection($"Data Source={fixture};Mode=ReadWrite;Pooling=False");
+    connection.Open(); Execute(connection,"BEGIN EXCLUSIVE");
+    try { Fails(() => Load(8), "locked"); } finally { Execute(connection,"ROLLBACK"); }
+});
+Test("Read-only file loads", () =>
+{
+    var attributes = File.GetAttributes(fixture); File.SetAttributes(fixture, attributes | FileAttributes.ReadOnly);
+    try { Check(Load(8).Loci.Count == 26, "read-only load"); } finally { File.SetAttributes(fixture,attributes); }
+});
+Test("Database bytes unchanged", () => Check(before.SequenceEqual(SHA256.HashData(File.ReadAllBytes(fixture))), "database modified"));
+Test("No pooled connection keeps database locked", () => { using var stream = File.Open(fixture,FileMode.Open,FileAccess.ReadWrite,FileShare.None); Check(stream.Length > 0,"exclusive access"); });
+
+// Independent diagram oracle, ordered by wall-slot; no reimplementation of the production formula.
+var diagram = new (int[] positions, float x, float z)[] {
+    ([1,2,3],0,9), ([4,5,6],6,9), ([7,8,9],6,0), ([10,11,12],6,-9),
+    ([13,14,15],0,-9), ([16,17,18],-6,-9), ([19,20,21],-6,0), ([22,23,24],-6,9)
+};
+Test("All three diagrams match world convention", () =>
+{
+    foreach (var (positions,x,z) in diagram)
+    {
+        Check(RoomLayout.Anchor(positions[0]) == new Vector3(x,0,z), "floor Slice");
+        Check(RoomLayout.Anchor(positions[1]) == new Vector3(x,3.5f,z), "middle Slice");
+        Check(RoomLayout.Anchor(positions[2]) == new Vector3(x,7,z), "upper Slice");
+    }
+});
+Test("Floor and ceiling are centered", () => Check(RoomLayout.Anchor(25) == Vector3.Zero && RoomLayout.Anchor(26) == new Vector3(0,7,0), "centers"));
+Test("Room depth exceeds width", () => Check(RoomLayout.Depth > RoomLayout.Width, "rectangular Room"));
+Test("Anchors are unique", () => Check(Enumerable.Range(1,26).Select(RoomLayout.Anchor).Distinct().Count() == 26, "duplicate Anchor"));
+Test("Presentations are inside room", () => Check(Enumerable.Range(1,26).Select(RoomLayout.Presentation).All(p => Math.Abs(p.X)<6 && Math.Abs(p.Z)<9 && p.Y>0 && p.Y<7), "text inset"));
+
+Console.WriteLine($"{count - failures.Count}/{count} checks passed. Fixtures: {directory}");
+return failures.Count == 0 ? 0 : 1;

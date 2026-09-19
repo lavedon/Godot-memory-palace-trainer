@@ -18,7 +18,7 @@ _Avoid_: scene, level, cube
 
 **Locus** (plural **Loci**):
 A single memorized item within a Room — its `Text` is the fact encoded, placed at one Position.
-The canonical Room holds 26 Loci; more than 26 is malformed data.
+The canonical Room holds 26 Loci; Positions beyond 26 exceed the viewer's capacity and are not shown.
 _Avoid_: point, spot, item, station
 
 **Position**:
@@ -54,3 +54,25 @@ Present in the data model; not yet rendered by the viewer.
   `palace.db` directly at runtime; nothing is copied or exported.
 - **Position 22**: the plan's Slice-1 diagram mislabeled the bottom-left corner as 21
   (a collision with Slice-3's left-middle). Correct value is 22.
+
+## Agreed review clarifications — 2026-09-19
+
+These clarifications take precedence over conflicting wording in the original plan.
+Implementation and acceptance details belong in [room-loci.md](room-loci.md) and the
+[database ADR](docs/adr/0001-csharp-godot-reads-palace-db-directly.md).
+
+- **Viewer capacity**: 26 Positions is the viewer's supported domain, not a constraint
+  guaranteed by the shared database. A Room may hold more Loci. The viewer places
+  Positions 1–26 and skips higher Positions with a visible warning; it must never
+  renumber, clamp, or otherwise redefine its Loci to fit.
+- **Position identity**: a Position is a stable spatial address. Missing Positions remain
+  empty Anchors; later Loci retain their original Positions. Contiguous numbering is an
+  observation about current data, not a requirement for displaying a Room.
+- **Room orientation**: front, back, left, and right are fixed parts of the Room's layout.
+  Turning or moving the camera must not mirror, reorder, or relocate its Anchors.
+- **Slices**: these are horizontal bands stacked vertically. The original plan's phrase
+  "vertical slices" is superseded by this definition.
+- **Room shape**: use a rectangular room with depth greater than width. References to a
+  "cube" in the original plan describe the early concept and do not prescribe its shape.
+- **Position 22 correction**: the current Slice-1 diagram already shows 22 correctly.
+  The earlier ambiguity note records a resolved issue.
