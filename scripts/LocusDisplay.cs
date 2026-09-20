@@ -11,6 +11,7 @@ public partial class LocusDisplay : Node3D
     public Label3D Billboard { get; private set; } = null!;
     public Vector3 LogicalAnchor { get; private set; }
     private float _textHeight;
+    private float _textWidth;
 
     public void Initialize(int position, Locus? locus)
     {
@@ -47,6 +48,23 @@ public partial class LocusDisplay : Node3D
         };
         paragraph.AddString(Billboard.Text, ThemeDB.FallbackFont, Billboard.FontSize);
         _textHeight = paragraph.GetSize().Y * Billboard.PixelSize;
+        _textWidth = paragraph.GetSize().X * Billboard.PixelSize;
+    }
+
+    public bool IsUnderCrosshair(Camera3D camera, out float depth)
+    {
+        // Both displays face the camera, so test the view-center ray in that plane.
+        // Use the same areas while hidden, allowing L to reveal text again.
+        var offset = GlobalPosition - camera.GlobalPosition;
+        depth = offset.Dot(-camera.GlobalBasis.Z);
+        if (depth <= camera.Near) return false;
+        var x = offset.Dot(camera.GlobalBasis.X);
+        var y = offset.Dot(camera.GlobalBasis.Y);
+        var halfWidth = Mathf.Max(.22f, _textWidth * Billboard.Scale.X / 2);
+        var halfHeight = Mathf.Max(.22f, _textHeight * Billboard.Scale.Y / 2);
+        if (Mathf.Abs(x) <= halfWidth + .08f && Mathf.Abs(y) <= halfHeight + .08f) return true;
+        var markerY = y + Marker.Offset.Y * Marker.PixelSize * Marker.Scale.Y;
+        return Mathf.Abs(x) <= .22f && Mathf.Abs(markerY) <= .22f;
     }
 
     public void UpdateScale(Camera3D camera)

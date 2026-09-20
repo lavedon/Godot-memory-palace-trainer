@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Remove="Core/**/*.cs;Tests/**/*.cs" />
+    <Compile Remove="Core/**/*.cs;Tests/**/*.cs;Migrations/**/*.cs" />
     <ProjectReference Include="Core/PalaceRoomViewer.Core.csproj" />
   </ItemGroup>
 </Project>

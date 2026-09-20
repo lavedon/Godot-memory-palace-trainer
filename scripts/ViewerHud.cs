@@ -12,6 +12,8 @@ public partial class ViewerHud : CanvasLayer
     private Label _title = null!;
     private Label _subtitle = null!;
     private Label _state = null!;
+    private Label _focusHint = null!;
+    private Label _crosshair = null!;
     private Label _pauseHint = null!;
     private PanelContainer _readingPanel = null!;
     private Label _readingTitle = null!;
@@ -27,6 +29,7 @@ public partial class ViewerHud : CanvasLayer
     public bool HasError => _errorPanel.Visible;
     public string ErrorText => _errorText.Text;
     public string WarningText => _warningsText.Text;
+    public bool ReadingVisible => _readingPanel.Visible;
 
     public override void _Ready()
     {
@@ -49,25 +52,26 @@ public partial class ViewerHud : CanvasLayer
         stateBox.AddChild(Text("DISPLAY", 12, Muted));
         _state = Text("J   Text hidden     K   Markers visible", 15, Accent);
         stateBox.AddChild(_state);
+        _focusHint = Text("L   Aim at a Position", 13, Muted);
+        stateBox.AddChild(_focusHint);
 
         _pauseHint = Text("", 15, Ink);
         _root.AddChild(_pauseHint);
         _pauseHint.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.CenterTop);
-        _pauseHint.Position = new(-250, 154);
-        _pauseHint.Size = new(500, 32);
+        _pauseHint.OffsetLeft = -250; _pauseHint.OffsetRight = 250;
+        _pauseHint.OffsetTop = 154; _pauseHint.OffsetBottom = 186;
         _pauseHint.HorizontalAlignment = HorizontalAlignment.Center;
 
-        var crosshair = Text("+", 21, new Color(1, 1, 1, .55f));
-        crosshair.MouseFilter = Control.MouseFilterEnum.Ignore;
-        _root.AddChild(crosshair);
-        crosshair.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.Center);
-        crosshair.Position = new(-12, -15);
-        crosshair.Size = new(24, 30);
-        crosshair.HorizontalAlignment = HorizontalAlignment.Center;
+        _crosshair = Text("+", 21, new Color(1, 1, 1, .55f));
+        _root.AddChild(_crosshair);
+        _crosshair.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.Center);
+        _crosshair.OffsetLeft = -12; _crosshair.OffsetRight = 12;
+        _crosshair.OffsetTop = -15; _crosshair.OffsetBottom = 15;
+        _crosshair.HorizontalAlignment = HorizontalAlignment.Center;
 
         var controls = Panel(24, -85, 630, -24, false, true);
         var controlsBox = Column(controls);
-        controlsBox.AddChild(Text("W A S D   Walk     MOUSE   Look     J   Text     K   Markers", 14, Ink));
+        controlsBox.AddChild(Text("WASD   Walk    MOUSE   Look    J   All text    L   This text    K   Markers", 14, Ink));
         controlsBox.AddChild(Text("ESC   Release mouse   ·   Click the Room to resume   ·   Aim at text to read", 12, Muted));
 
         _readingPanel = Panel(24, -306, 630, -103, false, true);
@@ -84,6 +88,7 @@ public partial class ViewerHud : CanvasLayer
         _warningsPanel.Visible = false;
         var warningBox = Column(_warningsPanel);
         _warningsTitle = Text("", 15, new Color("edbf7f"));
+        _warningsTitle.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         warningBox.AddChild(_warningsTitle);
         _warningsText = RichText(14);
         _warningsText.AddThemeColorOverride("default_color", new Color("dec6a6"));
@@ -118,13 +123,17 @@ public partial class ViewerHud : CanvasLayer
         errorBox.AddChild(quit);
     }
 
-    public void ShowRoom(RoomSnapshot room)
+    public void ShowRoom(RoomSnapshot room, IReadOnlyList<string>? textureWarnings = null)
     {
         _title.Text = room.Title;
         _subtitle.Text = $"ROOM {room.Id:00}   /   {room.Loci.Count} of 26 Positions populated" + (room.Loci.Count == 0 ? "   /   Empty Room" : "");
-        _warningsPanel.Visible = room.Warnings.Count > 0;
-        _warningsTitle.Text = $"{room.Warnings.Count} {(room.Warnings.Count == 1 ? "Locus" : "Loci")} skipped";
-        _warningsText.Text = string.Join("\n\n", room.Warnings);
+        textureWarnings ??= [];
+        _warningsPanel.Visible = room.Warnings.Count > 0 || textureWarnings.Count > 0;
+        var summaries = new List<string>();
+        if (room.Warnings.Count > 0) summaries.Add($"{room.Warnings.Count} {(room.Warnings.Count == 1 ? "Locus" : "Loci")} skipped");
+        if (textureWarnings.Count > 0) summaries.Add($"{textureWarnings.Count} image {(textureWarnings.Count == 1 ? "warning" : "warnings")}");
+        _warningsTitle.Text = string.Join(" · ", summaries);
+        _warningsText.Text = string.Join("\n\n", room.Warnings.Select(w => w.ToString()).Concat(textureWarnings));
     }
 
     public void ShowError(string message)
@@ -136,9 +145,14 @@ public partial class ViewerHud : CanvasLayer
         _readingPanel.Visible = false;
     }
 
-    public void UpdateState(bool textVisible, bool markersVisible, bool captured)
+    public void UpdateState(int visibleCount, int totalCount, bool markersVisible, bool captured, LocusDisplay? focus)
     {
-        _state.Text = $"J   Text {(textVisible ? "visible" : "hidden")}     K   Markers {(markersVisible ? "visible" : "hidden")}";
+        var textState = visibleCount == 0 ? "hidden" : visibleCount == totalCount ? "visible" : $"{visibleCount}/{totalCount}";
+        _state.Text = $"J   Text {textState}     K   Markers {(markersVisible ? "visible" : "hidden")}";
+        _focusHint.Text = focus?.Locus is not null
+            ? $"L   {(focus.Billboard.Visible ? "Hide" : "Show")} text · Position {focus.PositionNumber:00}"
+            : focus is not null ? $"Position {focus.PositionNumber:00} · Empty" : "L   Aim at a Position";
+        _crosshair.Modulate = focus?.Locus is not null ? Accent : Colors.White;
         _pauseHint.Text = captured || HasError ? "" : "Mouse released · Click the Room to continue";
     }
 

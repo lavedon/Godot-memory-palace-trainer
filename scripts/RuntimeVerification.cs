@@ -45,6 +45,8 @@ public static class RuntimeVerification
             result["loaded"] = viewer.Room is not null;
             result["error"] = viewer.Hud.ErrorText;
             result["warnings"] = viewer.Room?.Warnings.Select(w => w.ToString()).ToArray() ?? [];
+            result["wallTextures"] = viewer.WallTextures.Paths.ToDictionary(p => p.Key.ToString().ToLowerInvariant(), p => p.Value);
+            result["textureWarnings"] = viewer.WallTextures.Warnings;
             result["loci"] = viewer.Room?.Loci.Values.OrderBy(l => l.Position).ToArray() ?? [];
             using (var process = System.Diagnostics.Process.GetCurrentProcess())
             {
@@ -65,23 +67,120 @@ public static class RuntimeVerification
             {
                 Check(!viewer.Hud.HasError, "Successful load has no error");
                 Check(viewer.Room.Warnings.All(w => viewer.Hud.WarningText.Contains(w.ToString())), "Every skipped Locus appears in visible warnings");
+                Check(viewer.WallTextures.Warnings.All(w => viewer.Hud.WarningText.Contains(w)), "Every wall image failure appears in visible warnings");
                 Check(viewer.Displays.All(d => d.LogicalAnchor == RoomGeometry.ToGodot(RoomLayout.Anchor(d.PositionNumber))), "Spatial mapping matches stable Position identity");
                 await Capture("markers");
+                var player = viewer.Player;
+                player.Enabled = false; // Verification drives movement deterministically on physics ticks.
+                var startPosition = player.Position;
+                var startCameraRotation = player.Camera.Rotation;
+                foreach (var wall in viewer.WallTextures.Paths.Keys)
+                {
+                    var surface = viewer.GetNode<MeshInstance3D>($"Texture{wall}");
+                    Check(surface.Mesh is QuadMesh && surface.MaterialOverride is StandardMaterial3D { AlbedoTexture: ImageTexture }, $"{wall} uses a decoded external image texture");
+                    var inward = wall switch
+                    {
+                        RoomWall.Forward => Vector3.Forward, RoomWall.Back => Vector3.Back,
+                        RoomWall.Left => Vector3.Right, RoomWall.Right => Vector3.Left,
+                        RoomWall.Floor => Vector3.Up, _ => Vector3.Down
+                    };
+                    Check(surface.GlobalBasis.Z.Dot(inward) > .99f, $"{wall} image faces into the Room");
+                    if (wall is RoomWall.Floor or RoomWall.Ceiling)
+                    {
+                        Check(viewer.GetNode<MeshInstance3D>(wall == RoomWall.Floor ? "FloorJoint" : "CeilingLight").Visible, $"{wall} retains existing details");
+                        Check(surface.GlobalBasis.Y.Dot(Vector3.Forward) > .99f, $"{wall} image top points toward BACK");
+                    }
+                    else
+                    {
+                        var prefix = wall == RoomWall.Forward ? "Front" : wall.ToString();
+                        Check(viewer.GetNode<MeshInstance3D>(prefix + "Band").Visible && viewer.GetNode<MeshInstance3D>(prefix + "Seam").Visible, $"{wall} retains the existing grid");
+                    }
+                    player.Position = wall switch { RoomWall.Floor => new Vector3(0, 3, 7), RoomWall.Ceiling => new Vector3(0, 0, -5), _ => Vector3.Zero };
+                    player.Camera.LookAt(surface.GlobalPosition);
+                    await Capture("wall-" + wall.ToString().ToLowerInvariant());
+                }
+                Check(viewer.GetNode<MeshInstance3D>("FrontInset").Visible == !viewer.WallTextures.Paths.ContainsKey(RoomWall.Forward), "Front image replaces the inset only when loaded");
+                player.Position = startPosition;
+                player.Camera.Rotation = startCameraRotation;
+                void AimAt(LocusDisplay display)
+                {
+                    var target = display.GlobalPosition;
+                    var horizontal = new Vector3(target.X, 0, target.Z);
+                    player.Position = horizontal.Length() > 2 ? horizontal - horizontal.Normalized() * 3 : new Vector3(0, 0, 1.7f);
+                    player.Camera.LookAt(target);
+                }
+                var populated = viewer.Displays.Where(d => d.Locus is not null).ToArray();
+                foreach (var display in populated)
+                {
+                    AimAt(display);
+                    Keypress(Key.L);
+                    Check(viewer.Displays.All(d => d.Billboard.Visible == (d == display)), $"L reveals only Position {display.PositionNumber} from hidden text");
+                    Check(viewer.Hud.ReadingVisible, "L-revealed text is available in the reading panel");
+                    Input.ParseInputEvent(new InputEventKey { Device = InputDevice, PhysicalKeycode = Key.L, Pressed = true, Echo = true });
+                    Input.FlushBufferedEvents();
+                    Check(display.Billboard.Visible, "L ignores key repeat");
+                    if (display == populated[0]) await Capture("single-text");
+                    Keypress(Key.L);
+                    Check(!viewer.TextVisible && !viewer.Hud.ReadingVisible, $"L hides Position {display.PositionNumber} and its reading panel");
+                }
+                foreach (var display in viewer.Displays.Where(d => d.Locus is null))
+                {
+                    AimAt(display);
+                    Keypress(Key.L);
+                    Check(!viewer.TextVisible, $"L on empty Position {display.PositionNumber} does nothing");
+                }
+                if (populated.Length > 0)
+                {
+                    var display = populated[0];
+                    AimAt(display);
+                    display.UpdateScale(player.Camera);
+                    var markerCenter = display.GlobalPosition + player.Camera.GlobalBasis.Y * display.Marker.Offset.Y * display.Marker.PixelSize * display.Marker.Scale.Y;
+                    player.Camera.LookAt(markerCenter);
+                    Keypress(Key.L);
+                    Check(display.Billboard.Visible, "L can target the numbered marker");
+                    Keypress(Key.K);
+                    Keypress(Key.L);
+                    Check(!viewer.TextVisible && viewer.Displays.All(d => !d.Marker.Visible), "L works with markers hidden and leaves them hidden");
+                    Keypress(Key.K);
+                    AimAt(display);
+                    Keypress(Key.L);
+                    player.Position = new(-5, 0, -8);
+                    player.Camera.LookAt(new Vector3(-4.95f, -1, -8));
+                    var visibilityBefore = viewer.Displays.Select(d => d.Billboard.Visible).ToArray();
+                    await Frame();
+                    Check(visibilityBefore.SequenceEqual(viewer.Displays.Select(d => d.Billboard.Visible)), "Looking away preserves individual visibility");
+                    Keypress(Key.L);
+                    Check(visibilityBefore.SequenceEqual(viewer.Displays.Select(d => d.Billboard.Visible)), "L with no target changes nothing");
+                    if (populated.Length > 1)
+                    {
+                        AimAt(populated[1]);
+                        Keypress(Key.L);
+                        Check(display.Billboard.Visible && populated[1].Billboard.Visible && viewer.Displays.Count(d => d.Billboard.Visible) == 2, "L reveals another Locus without hiding the first");
+                    }
+                    Keypress(Key.J);
+                    Check(!viewer.TextVisible, "J hides all text after individual reveals");
+                    Keypress(Key.J);
+                    AimAt(display);
+                    Keypress(Key.L);
+                    Check(viewer.Displays.All(d => d.Billboard.Visible == (d.Locus is not null && d != display)), "L hides only its target after J shows all text");
+                    if (viewer.TextVisible) Keypress(Key.J);
+                }
+                Check(viewer.Displays.All(d => d.Marker.Visible), "Individual text toggles preserve marker visibility");
+                player.Position = startPosition;
+                player.Camera.Rotation = startCameraRotation;
                 Keypress(Key.J);
                 Check(viewer.Displays.Count(d => d.Billboard.Visible) == viewer.Room.Loci.Count, "J shows every populated Billboard");
                 Check(viewer.Displays.Where(d => d.Locus is not null).All(d => d.Billboard.Text == d.Locus!.Text), "Billboards retain complete text");
                 Keypress(Key.K);
                 Check(viewer.Displays.All(d => !d.Marker.Visible), "K hides markers");
-                Check(viewer.TextVisible, "K leaves text visible");
+                Check(viewer.Displays.Count(d => d.Billboard.Visible) == viewer.Room.Loci.Count, "K leaves populated text visible");
                 Keypress(Key.J);
                 Check(viewer.Displays.All(d => !d.Billboard.Visible && !d.Marker.Visible), "J hides text independently of markers");
                 Keypress(Key.K);
                 Keypress(Key.J);
                 Input.ParseInputEvent(new InputEventKey { Device = InputDevice, PhysicalKeycode = Key.J, Pressed = true, Echo = true });
                 Input.FlushBufferedEvents();
-                Check(viewer.TextVisible, "Key repeat does not retrigger toggle");
-                var player = viewer.Player;
-                player.Enabled = false; // Verification drives movement deterministically on physics ticks.
+                Check(viewer.Displays.Count(d => d.Billboard.Visible) == viewer.Room.Loci.Count, "Key repeat does not retrigger toggle");
                 await Capture("front-text");
                 player.Position = new(0, 0, 1);
                 player.Camera.LookAt(new Vector3(0, .75f, 0));

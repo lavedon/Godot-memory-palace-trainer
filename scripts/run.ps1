@@ -1,7 +1,12 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory=$true)][long]$Room,
-    [string]$Database = 'C:\tools\Data\palace.db'
+    [string]$Database = 'C:\tools\Data\palace.db',
+    [string]$Left,
+    [string]$Right,
+    [string]$Forward,
+    [string]$Back,
+    [string]$RoomTextures
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -13,5 +18,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
     & $godot --headless --path $projectRoot --editor --import
     if ($LASTEXITCODE -ne 0) { throw 'Godot import failed.' }
-    & $godot --path $projectRoot -- --room $Room --db $Database
+    $viewerArguments = @('--room', "$Room", '--db', $Database)
+    foreach ($entry in @{left=$Left;right=$Right;forward=$Forward;back=$Back;'room-textures'=$RoomTextures}.GetEnumerator()) {
+        if ($entry.Value) { $viewerArguments += @(("--" + $entry.Key), $entry.Value) }
+    }
+    & $godot --path $projectRoot -- @viewerArguments
 } finally { Pop-Location }

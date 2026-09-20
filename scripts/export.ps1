@@ -25,15 +25,38 @@ Keep this whole folder together. Open PowerShell in this folder and run:
 
     .\PalaceRoomViewer.exe -- --room 8
     .\PalaceRoomViewer.exe -- --room 7 --db 'D:\my data\palace.db'
+    .\PalaceRoomViewer.exe -- --room 8 --room-textures 'D:\palace walls'
+    .\PalaceRoomViewer.exe -- --room 8 --left 'D:\pictures\left.png' --forward 'D:\pictures\front.jpg'
 
 The Room ID is required. The database defaults to C:\tools\Data\palace.db.
+Use absolute --db and CLI image paths when launching from another directory;
+Godot resolves relative CLI paths from this executable's folder.
 The viewer opens SQLite read-only. Missing inputs show instructions in the window.
 Godot, a .NET installation, and the shared C:\tools\e_sqlite3.dll are not required.
 
-WASD: walk. Mouse: look. J: toggle text. K: toggle numbered markers.
+WASD: walk. Mouse: look. J: toggle all text. L: toggle the Locus under the crosshair.
+K: toggle numbered markers. L works on hidden text and leaves other Loci unchanged.
+J hides all text if any is visible; otherwise it shows all text.
 Escape: release mouse. Click the Room: resume. Alt+F4: close.
 Aim at a Position with text enabled to read; release the mouse to scroll long text.
-The teal FRONT wall corresponds to the bottom edge of the room diagrams.
+The FRONT wall corresponds to the bottom edge of the room diagrams.
+
+Room images load automatically from Rooms.LeftImagePath, RightImagePath,
+ForwardImagePath, BackImagePath, FloorImagePath, and CeilingImagePath. Store local
+file paths, either absolute or relative to the database's folder. NULL or blank
+values keep the default surface. Old databases without these columns still work.
+The viewer never migrates or edits a database. Use the project's separate
+scripts/migrate-room-images.ps1 maintenance command to add the columns once.
+
+Optional overrides: --left <file>, --right <file>, --forward <file>, --back <file>.
+Or use --room-textures <folder> with left.png, right.png, forward.png, back.png,
+floor.png, ceiling.png. Any subset is allowed. Individual switches override folder
+images, which override database values for the supplied surfaces. --forward means
+the fixed FRONT wall. Quote paths with spaces. PNG, JPEG, and WebP are supported.
+Each image stretches across its wall behind the existing grid. For undistorted
+images use 12:7 proportions for forward/back, 18:7 for left/right, 12:18 for floor/ceiling.
+Missing folder images keep the database choice or default. Invalid selected images
+show a warning and keep the affected surfaces at their defaults.
 '@ | Set-Content -LiteralPath 'artifacts/windows/README.md'
     Write-Host 'Export ready: artifacts/windows/PalaceRoomViewer.exe'
 } finally { Pop-Location }

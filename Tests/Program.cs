@@ -71,6 +71,64 @@ Test("Unknown option", () => Fails(() => ViewerOptions.Parse(["--rom","8"]), "Un
 Test("Duplicate Room argument", () => Fails(() => ViewerOptions.Parse(["--room","8","--room","7"]), "once"));
 Test("Duplicate database argument", () => Fails(() => ViewerOptions.Parse(["--room","8","--db","a","--db","b"]), "once"));
 Test("Empty database argument", () => Fails(() => ViewerOptions.Parse(["--room","8","--db"," "]), "empty"));
+Test("Wall textures are optional", () => Check(ViewerOptions.Parse(["--room","8"]).WallTextures.Resolve().Paths.Count == 0, "no default texture files"));
+Test("All wall switches parse independently", () =>
+{
+    var options = ViewerOptions.Parse(["--left","left image.png","--room","8","--right","right.jpg","--forward","front.png","--back","back.webp","--room-textures","wall folder"]);
+    Check(options.WallTextures == new WallTextureOptions("left image.png","right.jpg","front.png","back.webp","wall folder"), "wall paths");
+});
+foreach (var option in new[] {"--left","--right","--forward","--back","--room-textures"})
+{
+    Test($"Missing {option} value", () => Fails(() => ViewerOptions.Parse(["--room","8",option]), "value"));
+    Test($"Empty {option} value", () => Fails(() => ViewerOptions.Parse(["--room","8",option," "]), "empty"));
+    Test($"Duplicate {option}", () => Fails(() => ViewerOptions.Parse(["--room","8",option,"a",option,"b"]), "once"));
+}
+var wallFolder = Path.Combine(directory, "texture path fixtures");
+Directory.CreateDirectory(wallFolder);
+// These are path-resolution fixtures, not images; decoding is exercised in Godot.
+foreach (var name in new[] {"left.png","right.png","forward.png","back.png","ignored.png"})
+    File.WriteAllText(Path.Combine(wallFolder,name), "path fixture");
+Test("Folder uses the four agreed filenames", () =>
+{
+    var sources = new WallTextureOptions(Folder: wallFolder).Resolve();
+    Check(sources.Paths.Count == 4 && sources.Warnings.Count == 0 && sources.Paths[RoomWall.Forward] == Path.Combine(wallFolder,"forward.png"), "folder mappings");
+});
+var overridePath = Path.Combine(directory,"a; quoted 'wall'.png"); File.WriteAllText(overridePath,"path fixture");
+Test("Explicit wall wins regardless of argument order", () =>
+{
+    foreach (var arguments in new[]
+    {
+        new[] {"--room","8","--left",overridePath,"--room-textures",wallFolder},
+        new[] {"--room-textures",wallFolder,"--left",overridePath,"--room","8"}
+    })
+    {
+        var sources = ViewerOptions.Parse(arguments).WallTextures.Resolve();
+        Check(sources.Paths.Count == 4 && sources.Paths[RoomWall.Left] == overridePath && sources.Warnings.Count == 0, "override precedence");
+    }
+});
+var partialFolder = Path.Combine(directory,"partial texture paths"); Directory.CreateDirectory(partialFolder);
+File.WriteAllText(Path.Combine(partialFolder,"left.png"),"path fixture");
+Test("Partial texture folder is allowed", () =>
+{
+    var sources = new WallTextureOptions(Folder: partialFolder).Resolve();
+    Check(sources.Paths.Count == 1 && sources.Paths.ContainsKey(RoomWall.Left) && sources.Warnings.Count == 0, "partial folder");
+});
+Test("Missing override warns and does not silently use folder image", () =>
+{
+    var sources = new WallTextureOptions(Left: Path.Combine(directory,"missing.png"), Folder: wallFolder).Resolve();
+    Check(sources.Paths.Count == 3 && !sources.Paths.ContainsKey(RoomWall.Left) && sources.Warnings.Single().Contains("Left"), "missing explicit image");
+});
+Test("Missing folder still allows explicit images", () =>
+{
+    var sources = new WallTextureOptions(Right: overridePath, Folder: Path.Combine(directory,"absent-folder")).Resolve();
+    Check(sources.Paths.Count == 1 && sources.Paths[RoomWall.Right] == overridePath && sources.Warnings.Count == 1, "missing folder");
+});
+Test("Relative texture paths use the working directory", () =>
+{
+    var relative = Path.GetRelativePath(Environment.CurrentDirectory, overridePath);
+    Check(new WallTextureOptions(Back: relative).Resolve().Paths[RoomWall.Back] == overridePath, "relative path");
+});
+Test("Invalid texture paths produce warnings", () => Check(new WallTextureOptions(Left: "bad\0path").Resolve().Warnings.Count == 1, "invalid path"));
 Test("All 26 Positions load", () => { var room = Load(8); Check(room.Title == "The complete Room" && room.Loci.Count == 26 && room.Warnings.Count == 0, "full Room"); });
 Test("Overflow warns by Locus identity", () => { var room = Load(7); Check(room.Loci.Count == 26 && room.Warnings.Select(w => w.LocusId).SequenceEqual(new long[] {727,728,729}), "overflow warning identities"); });
 Test("Gaps preserve identity", () => Check(Load(20).Loci.Keys.SequenceEqual(new[] {1,10,26}), "gaps must remain empty"));
@@ -120,5 +178,6 @@ Test("Room depth exceeds width", () => Check(RoomLayout.Depth > RoomLayout.Width
 Test("Anchors are unique", () => Check(Enumerable.Range(1,26).Select(RoomLayout.Anchor).Distinct().Count() == 26, "duplicate Anchor"));
 Test("Presentations are inside room", () => Check(Enumerable.Range(1,26).Select(RoomLayout.Presentation).All(p => Math.Abs(p.X)<6 && Math.Abs(p.Z)<9 && p.Y>0 && p.Y<7), "text inset"));
 
+RoomImageChecks.Run(directory, Test);
 Console.WriteLine($"{count - failures.Count}/{count} checks passed. Fixtures: {directory}");
 return failures.Count == 0 ? 0 : 1;

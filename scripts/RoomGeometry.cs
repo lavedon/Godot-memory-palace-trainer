@@ -5,6 +5,63 @@ namespace PalaceRoomViewer;
 
 public static class RoomGeometry
 {
+    public static WallTextureSources ApplyTextures(Node3D parent, WallTextureSources sources)
+    {
+        var loaded = new Dictionary<RoomWall, string>();
+        var warnings = sources.Warnings.ToList();
+        foreach (var (wall, path) in sources.Paths)
+        {
+            try
+            {
+                using var image = new Image();
+                var error = image.Load(path);
+                if (error != Error.Ok || image.IsEmpty())
+                {
+                    warnings.Add($"{wall} image could not be loaded ({error}): {path}");
+                    continue;
+                }
+                image.GenerateMipmaps();
+                var material = new StandardMaterial3D
+                {
+                    AlbedoColor = Colors.White, AlbedoTexture = ImageTexture.CreateFromImage(image),
+                    Roughness = .9f, TextureFilter = BaseMaterial3D.TextureFilterEnum.LinearWithMipmaps,
+                    TextureRepeat = false
+                };
+                // Interior-facing quads use the complete image once. They sit between the
+                // solid wall and the separate grid geometry, avoiding BoxMesh UV atlases.
+                var (size, position, rotation) = wall switch
+                {
+                    RoomWall.Forward => (new Vector2(12, 7), new Vector3(0, 3.5f, 8.985f), new Vector3(0, Mathf.Pi, 0)),
+                    RoomWall.Back => (new Vector2(12, 7), new Vector3(0, 3.5f, -8.985f), Vector3.Zero),
+                    RoomWall.Left => (new Vector2(18, 7), new Vector3(-5.985f, 3.5f, 0), new Vector3(0, Mathf.Pi / 2, 0)),
+                    RoomWall.Right => (new Vector2(18, 7), new Vector3(5.985f, 3.5f, 0), new Vector3(0, -Mathf.Pi / 2, 0)),
+                    // Image top points toward the fixed BACK wall on both horizontal surfaces.
+                    RoomWall.Floor => (new Vector2(12, 18), new Vector3(0, .001f, 0), new Vector3(-Mathf.Pi / 2, 0, 0)),
+                    RoomWall.Ceiling => (new Vector2(12, 18), new Vector3(0, 6.999f, 0), new Vector3(Mathf.Pi / 2, Mathf.Pi, 0)),
+                    _ => throw new ArgumentOutOfRangeException(nameof(wall))
+                };
+                parent.AddChild(new MeshInstance3D
+                {
+                    Name = $"Texture{wall}", Mesh = new QuadMesh { Size = size },
+                    MaterialOverride = material, Position = position, Rotation = rotation
+                });
+                if (wall == RoomWall.Forward) parent.GetNode<MeshInstance3D>("FrontInset").Visible = false;
+                var cue = parent.GetNodeOrNull<Label3D>((wall == RoomWall.Forward ? "FRONT" : wall.ToString().ToUpperInvariant()) + "Cue");
+                if (cue is not null)
+                {
+                    cue.OutlineSize = 8;
+                    cue.OutlineModulate = new Color("0b1720");
+                }
+                loaded.Add(wall, path);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                warnings.Add($"{wall} image could not be read: {path}\n{ex.Message}");
+            }
+        }
+        return new WallTextureSources(loaded, warnings);
+    }
+
     public static void Build(Node3D parent)
     {
         var stone = Material("40505b");

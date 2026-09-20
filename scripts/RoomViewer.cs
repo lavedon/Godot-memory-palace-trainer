@@ -9,7 +9,8 @@ public partial class RoomViewer : Node3D
     public ViewerHud Hud { get; private set; } = null!;
     public List<LocusDisplay> Displays { get; } = [];
     public RoomSnapshot? Room { get; private set; }
-    public bool TextVisible { get; private set; }
+    public WallTextureSources WallTextures { get; private set; } = new(new Dictionary<RoomWall, string>(), []);
+    public bool TextVisible => Displays.Any(d => d.Billboard.Visible);
     public bool MarkersVisible { get; private set; } = true;
     private bool _loaded;
     private bool _verificationActive;
@@ -28,8 +29,11 @@ public partial class RoomViewer : Node3D
         {
             var options = ViewerOptions.Parse(OS.GetCmdlineUserArgs());
             Room = new RoomRepository().Load(options);
-            Hud.ShowRoom(Room);
+            WallTextures = RoomGeometry.ApplyTextures(this, options.WallTextures.Resolve(Room));
+            Hud.ShowRoom(Room, WallTextures.Warnings);
             foreach (var warning in Room.Warnings) GD.Print($"WARNING: {warning}");
+            foreach (var warning in WallTextures.Warnings) GD.Print($"WARNING: {warning}");
+            foreach (var (wall, path) in WallTextures.Paths) GD.Print($"{wall} texture: {path}");
             GD.Print($"Loaded Room {Room.Id}: {Room.Loci.Count}/26 Positions, {Room.Warnings.Count} warnings. Database opened read-only.");
             _loaded = true;
         }
@@ -80,6 +84,11 @@ public partial class RoomViewer : Node3D
                 ToggleMarkers();
                 GetViewport().SetInputAsHandled();
             }
+            else if (_loaded && (key.PhysicalKeycode == Key.L || key.Keycode == Key.L))
+            {
+                ToggleFocusedText();
+                GetViewport().SetInputAsHandled();
+            }
         }
         if (_loaded && @event is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true })
             Input.MouseMode = Input.MouseModeEnum.Captured;
@@ -87,10 +96,36 @@ public partial class RoomViewer : Node3D
 
     public void ToggleText()
     {
-        TextVisible = !TextVisible;
-        foreach (var display in Displays) display.Billboard.Visible = TextVisible && display.Locus is not null;
-        if (!TextVisible) Hud.ShowReading(null);
+        var show = !TextVisible;
+        foreach (var display in Displays) display.Billboard.Visible = show && display.Locus is not null;
+        UpdateReading(FindFocusedDisplay());
     }
+
+    private void ToggleFocusedText()
+    {
+        var focus = FindFocusedDisplay();
+        if (focus?.Locus is null) return;
+        focus.Billboard.Visible = !focus.Billboard.Visible;
+        UpdateReading(focus);
+    }
+
+    private LocusDisplay? FindFocusedDisplay()
+    {
+        LocusDisplay? focus = null;
+        var nearest = float.PositiveInfinity;
+        foreach (var display in Displays)
+        {
+            display.UpdateScale(Player.Camera);
+            if (display.IsUnderCrosshair(Player.Camera, out var depth) && depth < nearest)
+            {
+                nearest = depth;
+                focus = display;
+            }
+        }
+        return focus;
+    }
+
+    private void UpdateReading(LocusDisplay? focus) => Hud.ShowReading(focus?.Billboard.Visible == true ? focus : null);
 
     public void ToggleMarkers()
     {
@@ -101,21 +136,12 @@ public partial class RoomViewer : Node3D
     public override void _Process(double delta)
     {
         var captured = Input.MouseMode == Input.MouseModeEnum.Captured;
-        Hud.UpdateState(TextVisible, MarkersVisible, captured);
+        var focus = FindFocusedDisplay();
+        Hud.UpdateState(Displays.Count(d => d.Billboard.Visible), Room?.Loci.Count ?? 0, MarkersVisible, captured, focus);
         Hud.Map.PlayerPosition = Player.GlobalPosition;
         Hud.Map.PlayerForward = -Player.Camera.GlobalBasis.Z;
         Hud.Map.QueueRedraw();
-        foreach (var display in Displays) display.UpdateScale(Player.Camera);
-        if (!TextVisible || !captured) return;
-        LocusDisplay? focus = null;
-        var best = .965f;
-        foreach (var display in Displays.Where(d => d.Locus is not null))
-        {
-            var direction = (display.GlobalPosition - Player.Camera.GlobalPosition).Normalized();
-            var dot = (-Player.Camera.GlobalBasis.Z).Dot(direction);
-            if (dot > best) { best = dot; focus = display; }
-        }
-        Hud.ShowReading(focus);
+        if (captured) UpdateReading(focus);
     }
 
     private static void RegisterInput()

@@ -7,4 +7,8 @@ public sealed record LoadWarning(long LocusId, string Position, string Reason)
 }
 
 public sealed record RoomSnapshot(long Id, string Title, IReadOnlyDictionary<int, Locus> Loci,
-    IReadOnlyList<LoadWarning> Warnings, string DatabasePath);
+    IReadOnlyList<LoadWarning> Warnings, string DatabasePath)
+{
+    public IReadOnlyDictionary<RoomWall, string> ImagePaths { get; init; } = new Dictionary<RoomWall, string>();
+    public IReadOnlyList<string> ImageWarnings { get; init; } = [];
+}

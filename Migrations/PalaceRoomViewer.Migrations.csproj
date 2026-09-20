@@ -5,8 +5,5 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
-  <ItemGroup>
-    <ProjectReference Include="../Core/PalaceRoomViewer.Core.csproj" />
-    <ProjectReference Include="../Migrations/PalaceRoomViewer.Migrations.csproj" />
-  </ItemGroup>
+  <ItemGroup><ProjectReference Include="../Core/PalaceRoomViewer.Core.csproj" /></ItemGroup>
 </Project>

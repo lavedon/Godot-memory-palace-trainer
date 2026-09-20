@@ -25,17 +25,40 @@ public sealed class RoomRepository
                 DefaultTimeout = 3
             }.ToString());
             connection.Open();
-            // Deferred BEGIN is compatible with read-only access and keeps both SELECTs in one snapshot.
+            // Schema, Room and Loci are read from one consistent, read-only snapshot.
             using var transaction = connection.BeginTransaction(deferred: true);
+            var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            using (var schema = connection.CreateCommand())
+            {
+                schema.Transaction = transaction;
+                schema.CommandText = "PRAGMA table_info(Rooms)";
+                using var reader = schema.ExecuteReader();
+                while (reader.Read()) columns.Add(reader.GetString(1));
+            }
+            var imageColumns = RoomImageColumns.ByWall.Where(p => columns.Contains(p.Value)).ToArray();
             using var roomCommand = connection.CreateCommand();
             roomCommand.Transaction = transaction;
-            roomCommand.CommandText = "SELECT Title FROM Rooms WHERE Id = @id";
+            // Only fixed, known identifiers are interpolated; old databases need no automatic migration.
+            roomCommand.CommandText = "SELECT Title" + string.Concat(imageColumns.Select(p => $", \"{p.Value}\"")) + " FROM Rooms WHERE Id = @id";
             roomCommand.Parameters.AddWithValue("@id", options.RoomId);
-            var titleValue = roomCommand.ExecuteScalar();
-            if (titleValue is null)
-                throw new ViewerException($"Room {options.RoomId} does not exist in:\n{path}");
-            if (titleValue is not string title || string.IsNullOrWhiteSpace(title))
-                throw new ViewerException($"Room {options.RoomId} has a missing or invalid Title.");
+            string title;
+            var imagePaths = new Dictionary<RoomWall, string>();
+            var imageWarnings = new List<string>();
+            using (var reader = roomCommand.ExecuteReader())
+            {
+                if (!reader.Read())
+                    throw new ViewerException($"Room {options.RoomId} does not exist in:\n{path}");
+                if (reader.GetValue(0) is not string roomTitle || string.IsNullOrWhiteSpace(roomTitle))
+                    throw new ViewerException($"Room {options.RoomId} has a missing or invalid Title.");
+                title = roomTitle;
+                for (var i = 0; i < imageColumns.Length; i++)
+                {
+                    if (reader.IsDBNull(i + 1)) continue;
+                    if (reader.GetValue(i + 1) is not string imagePath)
+                        imageWarnings.Add($"Room {options.RoomId}: {imageColumns[i].Value} must contain an image file path as text.");
+                    else if (!string.IsNullOrWhiteSpace(imagePath)) imagePaths[imageColumns[i].Key] = imagePath;
+                }
+            }
 
             var loci = new Dictionary<int, Locus>();
             var warnings = new List<LoadWarning>();
@@ -72,7 +95,8 @@ public sealed class RoomRepository
                 }
             }
             transaction.Commit();
-            return new RoomSnapshot(options.RoomId, title, loci, warnings, path);
+            return new RoomSnapshot(options.RoomId, title, loci, warnings, path)
+            { ImagePaths = imagePaths, ImageWarnings = imageWarnings };
         }
         catch (SqliteException ex)
         {
