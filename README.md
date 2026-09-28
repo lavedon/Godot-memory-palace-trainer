@@ -30,7 +30,24 @@ demonstrates warnings for Positions 27–29.
 | Escape | Release the mouse; use scrollbars or select text |
 | Left-click the Room | Capture the mouse and resume walking; also toggle the Locus under the crosshair |
 | M | Open or close the Palace menu |
+| R | Start or stop a rehearsal (see below) |
 | Alt+F4 | Close the viewer |
+
+## Rehearse a Room
+
+Press **R** to walk the Room in Position order with all text hidden. The camera glides to
+each populated Position and highlights its marker. Recall the Locus, press **Space** to
+reveal it, then grade yourself: **1** = missed, **2** = knew it. When the round ends, the
+next round repeats only that round's misses, still in Position order, until a round has
+no misses. Markers turn teal (known) or coral (missed) as you go. J, L and the mouse
+text toggles are disabled during a rehearsal so nothing is revealed early. Walking or
+looking cancels the glide.
+
+When the Room is clear, the panel shows your first-pass score and misses. **Space**
+starts again; **R** ends the rehearsal. Each completed rehearsal is appended as one JSON
+line to `rehearsals.jsonl` in the viewer's user folder
+(`%APPDATA%\Godot\app_userdata\Palace Room Viewer\`), recording the Room, times,
+misses by round, and the first-pass missed Locus IDs. `palace.db` is never written.
 
 ## Palace menu
 

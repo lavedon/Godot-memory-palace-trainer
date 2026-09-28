@@ -114,10 +114,8 @@ public static class RuntimeVerification
                 player.Camera.Rotation = startCameraRotation;
                 void AimAt(LocusDisplay display)
                 {
-                    var target = display.GlobalPosition;
-                    var horizontal = new Vector3(target.X, 0, target.Z);
-                    player.Position = horizontal.Length() > 2 ? horizontal - horizontal.Normalized() * 3 : new Vector3(0, 0, 1.7f);
-                    player.Camera.LookAt(target);
+                    player.Position = display.Viewpoint;
+                    player.Camera.LookAt(display.GlobalPosition);
                 }
                 var populated = viewer.Displays.Where(d => d.Locus is not null).ToArray();
                 foreach (var display in populated)
@@ -174,6 +172,46 @@ public static class RuntimeVerification
                     Keypress(Key.L);
                     Check(viewer.Displays.All(d => d.Billboard.Visible == (d.Locus is not null && d != display)), "L hides only its target after J shows all text");
                     if (viewer.TextVisible) Keypress(Key.J);
+                }
+                if (populated.Length > 0)
+                {
+                    var markerColors = viewer.Displays.Select(d => d.Marker.Modulate).ToArray();
+                    viewer.GuideSeconds = 0;
+                    Keypress(Key.R);
+                    var session = viewer.Rehearsal;
+                    Check(session is not null && session.Current == populated[0].PositionNumber, "R starts rehearsal at the first populated Position");
+                    Check(!viewer.TextVisible && !viewer.Hud.ReadingVisible && viewer.Hud.RehearsalVisible, "Rehearsal hides text until revealed");
+                    var misses = new List<int>();
+                    while (session!.Round == 1 && session.Current is { } position)
+                    {
+                        var target = viewer.Displays[position - 1];
+                        target.UpdateScale(player.Camera);
+                        Check(target.IsUnderCrosshair(player.Camera, out _), $"Rehearsal guides the view to Position {position}");
+                        Keypress(Key.Key2);
+                        Keypress(Key.J);
+                        Keypress(Key.L);
+                        Check(session.Current == position && !viewer.TextVisible, $"Position {position} stays hidden until Space");
+                        Keypress(Key.Space);
+                        Check(viewer.Displays.All(d => d.Billboard.Visible == (d == target)) && viewer.Hud.ReadingVisible, $"Space reveals only Position {position}");
+                        if (position == populated[0].PositionNumber) await Capture("rehearsal-reveal");
+                        var miss = position == populated[0].PositionNumber || position == populated[^1].PositionNumber;
+                        if (miss) misses.Add(position);
+                        Keypress(miss ? Key.Key1 : Key.Key2);
+                        Check(!target.Billboard.Visible, $"Grading hides Position {position}");
+                    }
+                    Check(session.Round == 2 && session.RoundPositions.SequenceEqual(misses) && viewer.Hud.RehearsalText.Contains("M I S S E S   O N L Y"), "Round 2 repeats only the misses");
+                    while (session.Current is not null)
+                    {
+                        Keypress(Key.Space);
+                        Keypress(Key.Key2);
+                    }
+                    Check(session.IsComplete && session.FirstPassMisses.SequenceEqual(misses) && viewer.Hud.RehearsalText.Contains("R O O M   C L E A R"), "A clean round clears the Room");
+                    await Capture("rehearsal-complete");
+                    var log = RehearsalLog.Read(viewer.RehearsalLogPath);
+                    Check(log.Count == 1 && log[0].RoomId == viewer.Room.Id && log[0].MissesByRound[0].SequenceEqual(misses) && log[0].FirstPassMissedLocusIds.Count == misses.Count, "Completed rehearsal is logged outside the database");
+                    Keypress(Key.R);
+                    Check(viewer.Rehearsal is null && !viewer.TextVisible && !viewer.Hud.RehearsalVisible && !player.Guiding, "R ends rehearsal and hides text");
+                    Check(viewer.Displays.Select(d => d.Marker.Modulate).SequenceEqual(markerColors), "Ending rehearsal restores marker colors");
                 }
                 Check(viewer.Displays.All(d => d.Marker.Visible), "Individual text toggles preserve marker visibility");
                 player.Position = startPosition;

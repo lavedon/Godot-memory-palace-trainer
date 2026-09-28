@@ -41,6 +41,8 @@ L or left-click: toggle the Locus under the crosshair.
 K: toggle numbered markers. L works on hidden text and leaves other Loci unchanged.
 J hides all text if any is visible; otherwise it shows all text.
 Escape: release mouse. Click the Room: resume. M: Palace menu. Alt+F4: close.
+R: rehearse the Room in order. Space reveals; 1 = missed, 2 = knew it.
+Misses repeat until a clean round. R again stops.
 Aim at a Position with text enabled to read; release the mouse to scroll long text.
 The FRONT wall corresponds to the bottom edge of the room diagrams.
 

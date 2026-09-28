@@ -24,6 +24,11 @@ public partial class ViewerHud : CanvasLayer
     private PanelContainer _warningsPanel = null!;
     private Label _warningsTitle = null!;
     private RichTextLabel _warningsText = null!;
+    private PanelContainer _rehearsalPanel = null!;
+    private Label _rehearsalTitle = null!;
+    private Label _rehearsalTarget = null!;
+    private Label _rehearsalProgress = null!;
+    private Label _rehearsalPrompt = null!;
     private long? _readingId;
     private bool _hasError;
     private bool _roomLoaded;
@@ -33,6 +38,8 @@ public partial class ViewerHud : CanvasLayer
     public string ErrorText => _errorText.Text;
     public string WarningText => _warningsText.Text;
     public bool ReadingVisible => _readingPanel.Visible;
+    public bool RehearsalVisible => _rehearsalPanel.Visible;
+    public string RehearsalText => string.Join("\n", _rehearsalTitle.Text, _rehearsalTarget.Text, _rehearsalProgress.Text, _rehearsalPrompt.Text);
 
     public override void _Ready()
     {
@@ -72,9 +79,9 @@ public partial class ViewerHud : CanvasLayer
         _crosshair.OffsetTop = -15; _crosshair.OffsetBottom = 15;
         _crosshair.HorizontalAlignment = HorizontalAlignment.Center;
 
-        var controls = Panel(24, -85, 700, -24, false, true);
+        var controls = Panel(24, -85, 790, -24, false, true);
         var controlsBox = Column(controls);
-        controlsBox.AddChild(Text("WASD   Walk    MOUSE   Look    J   All text    L   This text    K   Markers", 14, Ink));
+        controlsBox.AddChild(Text("WASD   Walk    MOUSE   Look    J   All text    L   This text    K   Markers    R   Rehearse", 14, Ink));
         controlsBox.AddChild(Text("LEFT CLICK   This text    RIGHT CLICK   All text    ESC   Release mouse    M   Palaces", 12, Muted));
 
         _readingPanel = Panel(24, -306, 630, -103, false, true);
@@ -86,6 +93,23 @@ public partial class ViewerHud : CanvasLayer
         _readingText.SizeFlagsVertical = Control.SizeFlags.ExpandFill;
         _readingText.CustomMinimumSize = new(0, 135);
         readerBox.AddChild(_readingText);
+
+        _rehearsalPanel = new PanelContainer { Visible = false, MouseFilter = Control.MouseFilterEnum.Ignore };
+        _rehearsalPanel.AddThemeStyleboxOverride("panel", Surface());
+        _root.AddChild(_rehearsalPanel);
+        _rehearsalPanel.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.CenterTop);
+        _rehearsalPanel.OffsetLeft = -290; _rehearsalPanel.OffsetRight = 290;
+        _rehearsalPanel.OffsetTop = 126; _rehearsalPanel.OffsetBottom = 262;
+        var rehearsalBox = Column(_rehearsalPanel);
+        _rehearsalTitle = Text("", 12, Accent);
+        rehearsalBox.AddChild(_rehearsalTitle);
+        _rehearsalTarget = Text("", 24, Ink);
+        rehearsalBox.AddChild(_rehearsalTarget);
+        _rehearsalProgress = Text("", 13, Muted);
+        _rehearsalProgress.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        rehearsalBox.AddChild(_rehearsalProgress);
+        _rehearsalPrompt = Text("", 16, new Color("f1d39b"));
+        rehearsalBox.AddChild(_rehearsalPrompt);
 
         _warningsPanel = Panel(-394, 126, -24, 362, true);
         _warningsPanel.Visible = false;
@@ -175,6 +199,28 @@ public partial class ViewerHud : CanvasLayer
         _crosshair.Modulate = focus?.Locus is not null ? Accent : Colors.White;
         _pauseHint.Text = captured || HasError ? "" : _roomLoaded ? "Mouse released · Click the Room to continue" : "Press M to choose a Room";
     }
+
+    public void ShowRehearsal(RehearsalSession session)
+    {
+        _rehearsalPanel.Visible = true;
+        if (session.Current is not { } position)
+        {
+            var firstPass = session.Positions.Count - session.FirstPassMisses.Count;
+            _rehearsalTitle.Text = "R E H E A R S E   /   R O O M   C L E A R";
+            _rehearsalTarget.Text = $"{firstPass} of {session.Positions.Count} on the first pass";
+            _rehearsalProgress.Text = (session.Round == 1 ? "Perfect walk-through." : $"Cleared in {session.Round} rounds.") +
+                (session.FirstPassMisses.Count > 0 ? "   First-pass misses: " + string.Join(", ", session.FirstPassMisses.Select(p => p.ToString("00"))) : "");
+            _rehearsalPrompt.Text = "SPACE   Rehearse again        R   Done";
+            return;
+        }
+        _rehearsalTitle.Text = session.Round == 1 ? "R E H E A R S E   /   R O U N D   1   ·   W H O L E   R O O M"
+            : $"R E H E A R S E   /   R O U N D   {session.Round}   ·   M I S S E S   O N L Y";
+        _rehearsalTarget.Text = $"Position {position:00}   ·   {RoomLayout.Description(position)}";
+        _rehearsalProgress.Text = $"{session.IndexInRound + 1} of {session.RoundPositions.Count}   ·   {session.RoundMisses.Count} missed this round";
+        _rehearsalPrompt.Text = session.Revealed ? "1   Missed        2   Knew it" : "Recall it, then   SPACE   Reveal";
+    }
+
+    public void HideRehearsal() => _rehearsalPanel.Visible = false;
 
     public void ShowReading(LocusDisplay? display)
     {

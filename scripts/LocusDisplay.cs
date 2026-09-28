@@ -3,6 +3,8 @@ using PalaceRoomViewer.Core;
 
 namespace PalaceRoomViewer;
 
+public enum MarkerCue { Normal, Target, Known, Missed }
+
 public partial class LocusDisplay : Node3D
 {
     public int PositionNumber { get; private set; }
@@ -12,6 +14,18 @@ public partial class LocusDisplay : Node3D
     public Vector3 LogicalAnchor { get; private set; }
     private float _textHeight;
     private float _textWidth;
+    private Color _markerColor;
+    private float _markerEmphasis = 1;
+
+    // A standing spot about 3 m in front of the text; floor and ceiling are viewed from near the center.
+    public Vector3 Viewpoint
+    {
+        get
+        {
+            var horizontal = new Vector3(GlobalPosition.X, 0, GlobalPosition.Z);
+            return horizontal.Length() > 2 ? horizontal - horizontal.Normalized() * 3 : new Vector3(0, 0, 1.7f);
+        }
+    }
 
     public void Initialize(int position, Locus? locus)
     {
@@ -37,6 +51,7 @@ public partial class LocusDisplay : Node3D
             Modulate = new Color("f2eee4"), OutlineModulate = new Color("0b1720"),
             OutlineSize = 8, NoDepthTest = false, Visible = false
         };
+        _markerColor = Marker.Modulate;
         AddChild(Marker);
         AddChild(Billboard);
         // Label3D's billboard AABB is a conservative volume, not the text's height.
@@ -67,6 +82,18 @@ public partial class LocusDisplay : Node3D
         return Mathf.Abs(x) <= .22f && Mathf.Abs(markerY) <= .22f;
     }
 
+    public void SetCue(MarkerCue cue)
+    {
+        Marker.Modulate = cue switch
+        {
+            MarkerCue.Target => new Color("f1d39b"),
+            MarkerCue.Known => new Color("88d8c4"),
+            MarkerCue.Missed => new Color("ee8a6b"),
+            _ => _markerColor
+        };
+        _markerEmphasis = cue == MarkerCue.Target ? 1.6f : 1;
+    }
+
     public void UpdateScale(Camera3D camera)
     {
         var distance = camera.GlobalPosition.DistanceTo(GlobalPosition);
@@ -76,7 +103,7 @@ public partial class LocusDisplay : Node3D
         if (_textHeight > 0) scale = Mathf.Min(scale, 1.35f / _textHeight);
         scale = Mathf.Min(scale, 3.3f / (Billboard.Width * Billboard.PixelSize));
         Billboard.Scale = Vector3.One * scale;
-        var markerScale = Mathf.Clamp(distance / 9f, .65f, 1.15f);
+        var markerScale = Mathf.Clamp(distance / 9f, .65f, 1.15f) * _markerEmphasis;
         Marker.Scale = Vector3.One * markerScale;
         Marker.Offset = new(0, (Mathf.Max(.24f, _textHeight * scale / 2) + .15f) / (Marker.PixelSize * markerScale));
     }

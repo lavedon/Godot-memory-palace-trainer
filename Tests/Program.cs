@@ -223,6 +223,54 @@ Test("Catalog groups Rooms by Palace and reports image files", () =>
 });
 Test("Catalog reports a missing database", () => Fails(() => new PalaceCatalog().Load(Path.Combine(directory, "absent.db")), "does not exist"));
 
+Test("Rehearsal walks Positions in order once each", () =>
+{
+    var session = new RehearsalSession([10, 1, 26, 10]);
+    Check(session.Positions.SequenceEqual([1, 10, 26]) && session.Current == 1 && session.Round == 1, "ordered start");
+    Check(!session.Grade(true) && session.Current == 1, "grading before reveal is ignored");
+    Check(session.Reveal() && !session.Reveal() && session.Revealed, "reveal once");
+    Check(session.Grade(true) && !session.Revealed && session.Current == 10, "advances and hides");
+});
+Test("Rehearsal repeats only misses until a clean round", () =>
+{
+    var session = new RehearsalSession([1, 2, 3, 4]);
+    void Answer(bool knew) { session.Reveal(); session.Grade(knew); }
+    foreach (var knew in new[] { true, false, true, false }) Answer(knew);
+    Check(session.Round == 2 && session.RoundPositions.SequenceEqual([2, 4]) && session.Current == 2, "round 2 is the misses");
+    Answer(true); Answer(false);
+    Check(session.Round == 3 && session.RoundPositions.SequenceEqual([4]), "round 3 is the remaining miss");
+    Answer(true);
+    Check(session.IsComplete && session.Current is null && session.Round == 3, "clean round completes");
+    Check(session.FirstPassMisses.SequenceEqual([2, 4]) && session.MissesByRound.Select(r => r.Count).SequenceEqual([2, 1, 0]), "miss history");
+    Check(!session.Reveal() && !session.Grade(true), "complete session ignores input");
+});
+Test("Perfect rehearsal completes in one round", () =>
+{
+    var session = new RehearsalSession([5]);
+    session.Reveal(); session.Grade(true);
+    Check(session.IsComplete && session.Round == 1 && session.FirstPassMisses.Count == 0, "one round");
+});
+Test("Rehearsal needs a populated Room", () =>
+{
+    try { _ = new RehearsalSession([]); } catch (ArgumentException) { return; }
+    throw new Exception("empty rehearsal allowed");
+});
+Test("Rehearsal log appends records outside the database", () =>
+{
+    var session = new RehearsalSession(Load(20).Loci.Keys);
+    foreach (var knew in new[] { false, true, true, true }) { session.Reveal(); session.Grade(knew); }
+    var log = Path.Combine(directory, "logs", "rehearsals.jsonl");
+    var started = DateTimeOffset.Parse("2026-09-28T10:00:00-04:00");
+    RehearsalLog.Append(log, RehearsalRecord.From(session, Load(20), started, started.AddMinutes(3)));
+    RehearsalLog.Append(log, RehearsalRecord.From(session, Load(20), started, started.AddMinutes(4)));
+    var records = RehearsalLog.Read(log);
+    Check(records.Count == 2 && File.ReadAllLines(log).Length == 2 && File.ReadAllText(log).Contains("\"firstPassMissedLocusIds\":[2001]"), "two camelCase lines");
+    var record = records[0];
+    Check(record.RoomId == 20 && record.StartedAt == started && record.Positions.SequenceEqual([1, 10, 26]), "room and time");
+    Check(record.MissesByRound.Count == 2 && record.MissesByRound[0].SequenceEqual([1]) && record.MissesByRound[1].Count == 0, "misses by round");
+    Check(RehearsalLog.Read(Path.Combine(directory, "absent.jsonl")).Count == 0, "missing log reads empty");
+});
+
 RoomImageChecks.Run(directory, Test);
 Console.WriteLine($"{count - failures.Count}/{count} checks passed. Fixtures: {directory}");
 return failures.Count == 0 ? 0 : 1;
