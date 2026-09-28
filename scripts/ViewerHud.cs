@@ -72,7 +72,7 @@ public partial class ViewerHud : CanvasLayer
         var controls = Panel(24, -85, 630, -24, false, true);
         var controlsBox = Column(controls);
         controlsBox.AddChild(Text("WASD   Walk    MOUSE   Look    J   All text    L   This text    K   Markers", 14, Ink));
-        controlsBox.AddChild(Text("ESC   Release mouse   ·   Click the Room to resume   ·   Aim at text to read", 12, Muted));
+        controlsBox.AddChild(Text("LEFT CLICK   This text    RIGHT CLICK   All text    ESC   Release mouse", 12, Muted));
 
         _readingPanel = Panel(24, -306, 630, -103, false, true);
         _readingPanel.Visible = false;

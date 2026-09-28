@@ -34,7 +34,8 @@ Godot resolves relative CLI paths from this executable's folder.
 The viewer opens SQLite read-only. Missing inputs show instructions in the window.
 Godot, a .NET installation, and the shared C:\tools\e_sqlite3.dll are not required.
 
-WASD: walk. Mouse: look. J: toggle all text. L: toggle the Locus under the crosshair.
+WASD: walk. Mouse: look. J or right-click: toggle all text.
+L or left-click: toggle the Locus under the crosshair.
 K: toggle numbered markers. L works on hidden text and leaves other Loci unchanged.
 J hides all text if any is visible; otherwise it shows all text.
 Escape: release mouse. Click the Room: resume. Alt+F4: close.

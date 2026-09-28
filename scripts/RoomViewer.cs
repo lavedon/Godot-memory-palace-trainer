@@ -90,8 +90,20 @@ public partial class RoomViewer : Node3D
                 GetViewport().SetInputAsHandled();
             }
         }
-        if (_loaded && @event is InputEventMouseButton { ButtonIndex: MouseButton.Left, Pressed: true })
-            Input.MouseMode = Input.MouseModeEnum.Captured;
+        if (_loaded && @event is InputEventMouseButton { Pressed: true } mouseButton)
+        {
+            if (mouseButton.ButtonIndex == MouseButton.Left)
+            {
+                Input.MouseMode = Input.MouseModeEnum.Captured;
+                ToggleFocusedText();
+                GetViewport().SetInputAsHandled();
+            }
+            else if (mouseButton.ButtonIndex == MouseButton.Right)
+            {
+                ToggleText();
+                GetViewport().SetInputAsHandled();
+            }
+        }
     }
 
     public void ToggleText()

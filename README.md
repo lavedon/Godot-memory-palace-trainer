@@ -24,11 +24,11 @@ demonstrates warnings for Positions 27–29.
 | --- | --- |
 | W A S D | Walk relative to your facing direction |
 | Mouse | Look, including up at the ceiling and down at the floor |
-| J | Hide all text if any is visible; otherwise show all text |
-| L | Toggle only the Locus under the crosshair, even when its text is hidden |
+| J or right-click | Hide all text if any is visible; otherwise show all text |
+| L or left-click | Toggle only the Locus under the crosshair, even when its text is hidden |
 | K | Toggle numbered markers (initially visible) |
 | Escape | Release the mouse; use scrollbars or select text |
-| Click the Room | Capture the mouse and resume walking |
+| Left-click the Room | Capture the mouse and resume walking; also toggle the Locus under the crosshair |
 | Alt+F4 | Close the viewer |
 
 The wall marked **FRONT** (teal by default) is the bottom of the original diagrams. The room plan
@@ -36,10 +36,10 @@ keeps this orientation while you turn. Aim near a populated Position with text
 enabled to show its full text in the reading panel; release the mouse to scroll
 long text. Warnings stay visible and scroll when needed.
 
-Text starts hidden. Aim at a Locus's text area or numbered marker and press **L**
+Text starts hidden. Aim at a Locus's text area or numbered marker and press **L** or **left-click**
 to reveal or hide only that Locus. Its visibility persists when you look away.
 The crosshair and the top-right hint identify the target. Empty Positions or looking
-between Positions do nothing. **J** sets all text together; **K** only affects markers.
+between Positions do nothing. **J** or **right-click** sets all text together; **K** only affects markers.
 
 ## Room images from the database
 
