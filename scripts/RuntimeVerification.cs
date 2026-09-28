@@ -57,7 +57,17 @@ public static class RuntimeVerification
             Check(viewer.Displays.Count == 26, "All 26 Anchors exist");
             Check(viewer.Displays.All(d => d.Marker.Visible), "Markers start visible");
             Check(viewer.Displays.All(d => !d.Billboard.Visible), "Text starts hidden");
-            if (viewer.Room is null)
+            result["menuOpen"] = viewer.Menu.IsOpen;
+            result["palaces"] = viewer.Menu.Catalog.Select(p => new { p.Id, p.Name, Rooms = p.Rooms.Select(r => new { r.Id, r.Title, r.LociCount, r.Found, r.Missing }) }).ToArray();
+            if (viewer.Room is null && !viewer.Hud.HasError)
+            {
+                Check(viewer.Menu.IsOpen, "Starting without --room opens the Palace menu");
+                Check(viewer.Menu.Catalog.Sum(p => p.Rooms.Count) > 0, "Palace menu lists Rooms");
+                Check(!viewer.Player.Enabled, "Walking disabled while choosing a Room");
+                Check(!viewer.Menu.CanClose, "Menu cannot close with no Room loaded");
+                await Capture("menu");
+            }
+            else if (viewer.Room is null)
             {
                 Check(viewer.Hud.HasError && viewer.Hud.ErrorText.Length > 0, "Failure is visible");
                 Check(!viewer.Player.Enabled, "Walking disabled on failed load");

@@ -8,9 +8,12 @@ public sealed record ViewerOptions(long RoomId, string DatabasePath)
     public const string Usage = "PalaceRoomViewer.exe -- --room <id> [--db <path>]\n" +
         "[--room-textures <folder>] [--left <image>] [--right <image>]\n" +
         "[--forward <image>] [--back <image>]";
+    // RoomId when the viewer was started without --room and should open the Room picker.
+    public const long NoRoom = 0;
+    public bool HasRoom => RoomId != NoRoom;
     public WallTextureOptions WallTextures { get; init; } = new();
 
-    public static ViewerOptions Parse(IReadOnlyList<string> arguments)
+    public static ViewerOptions Parse(IReadOnlyList<string> arguments, bool requireRoom = true)
     {
         long? roomId = null;
         string? databasePath = null;
@@ -47,9 +50,9 @@ public sealed record ViewerOptions(long RoomId, string DatabasePath)
                     throw new ViewerException($"Supply {option} only once.");
             }
         }
-        if (!roomId.HasValue)
+        if (!roomId.HasValue && requireRoom)
             throw new ViewerException($"Select a Room with --room <id>.\n{Usage}\nExample: PalaceRoomViewer.exe -- --room 8");
-        return new ViewerOptions(roomId.Value, databasePath ?? DefaultDatabasePath)
+        return new ViewerOptions(roomId ?? NoRoom, databasePath ?? DefaultDatabasePath)
         {
             WallTextures = new WallTextureOptions(
                 textureArguments.GetValueOrDefault("--left"), textureArguments.GetValueOrDefault("--right"),

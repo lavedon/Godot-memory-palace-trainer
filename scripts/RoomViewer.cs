@@ -7,6 +7,8 @@ public partial class RoomViewer : Node3D
 {
     public WalkingCamera Player { get; private set; } = null!;
     public ViewerHud Hud { get; private set; } = null!;
+    public PalaceMenu Menu { get; private set; } = null!;
+    public string DatabasePath { get; private set; } = ViewerOptions.DefaultDatabasePath;
     public List<LocusDisplay> Displays { get; } = [];
     public RoomSnapshot? Room { get; private set; }
     public WallTextureSources WallTextures { get; private set; } = new(new Dictionary<RoomWall, string>(), []);
@@ -14,6 +16,8 @@ public partial class RoomViewer : Node3D
     public bool MarkersVisible { get; private set; } = true;
     private bool _loaded;
     private bool _verificationActive;
+    // A Room chosen in the menu survives the scene reload that displays it.
+    private static ViewerOptions? s_pendingSelection;
 
     public override void _Ready()
     {
@@ -25,17 +29,35 @@ public partial class RoomViewer : Node3D
         AddChild(Player);
         Hud = new ViewerHud { Name = "Hud" };
         AddChild(Hud);
+        Menu = new PalaceMenu { Name = "Menu" };
+        AddChild(Menu);
+        Menu.RoomChosen += LoadRoom;
+        Menu.CloseRequested += CloseMenu;
+        Hud.ChooseRoomRequested += OpenMenu;
+        var pending = s_pendingSelection;
+        s_pendingSelection = null;
+        ViewerOptions? options = null;
         try
         {
-            var options = ViewerOptions.Parse(OS.GetCmdlineUserArgs());
-            Room = new RoomRepository().Load(options);
-            WallTextures = RoomGeometry.ApplyTextures(this, options.WallTextures.Resolve(Room));
-            Hud.ShowRoom(Room, WallTextures.Warnings);
-            foreach (var warning in Room.Warnings) GD.Print($"WARNING: {warning}");
-            foreach (var warning in WallTextures.Warnings) GD.Print($"WARNING: {warning}");
-            foreach (var (wall, path) in WallTextures.Paths) GD.Print($"{wall} texture: {path}");
-            GD.Print($"Loaded Room {Room.Id}: {Room.Loci.Count}/26 Positions, {Room.Warnings.Count} warnings. Database opened read-only.");
-            _loaded = true;
+            options = pending ?? ViewerOptions.Parse(OS.GetCmdlineUserArgs(), requireRoom: false);
+            DatabasePath = options.DatabasePath;
+            if (options.HasRoom)
+            {
+                Room = new RoomRepository().Load(options);
+                WallTextures = RoomGeometry.ApplyTextures(this, options.WallTextures.Resolve(Room));
+                Hud.ShowRoom(Room, WallTextures.Warnings);
+                foreach (var warning in Room.Warnings) GD.Print($"WARNING: {warning}");
+                foreach (var warning in WallTextures.Warnings) GD.Print($"WARNING: {warning}");
+                foreach (var (wall, path) in WallTextures.Paths) GD.Print($"{wall} texture: {path}");
+                GD.Print($"Loaded Room {Room.Id}: {Room.Loci.Count}/26 Positions, {Room.Warnings.Count} warnings. Database opened read-only.");
+                _loaded = true;
+            }
+            else
+            {
+                // Started without --room: the Palace menu picks one.
+                Hud.ShowNoRoom();
+                Player.Enabled = false;
+            }
         }
         catch (Exception ex)
         {
@@ -54,6 +76,7 @@ public partial class RoomViewer : Node3D
             Displays.Add(display);
         }
         Input.MouseMode = _loaded && DisplayServer.GetName() != "headless" ? Input.MouseModeEnum.Captured : Input.MouseModeEnum.Visible;
+        if (options is { HasRoom: false }) OpenMenu();
         if (_verificationActive)
             CallDeferred(MethodName.RunVerification);
     }
@@ -67,9 +90,23 @@ public partial class RoomViewer : Node3D
 
     public override void _UnhandledInput(InputEvent @event)
     {
+        if (Menu.IsOpen)
+        {
+            // The menu owns input while open; only its close keys pass through here.
+            if (@event is InputEventKey { Pressed: true, Echo: false } menuKey && Menu.CanClose &&
+                (menuKey.PhysicalKeycode is Key.M or Key.Escape || menuKey.Keycode is Key.M or Key.Escape))
+                CloseMenu();
+            GetViewport().SetInputAsHandled();
+            return;
+        }
         if (@event is InputEventKey key && key.Pressed && !key.Echo)
         {
-            if (key.PhysicalKeycode == Key.Escape || key.Keycode == Key.Escape)
+            if (key.PhysicalKeycode == Key.M || key.Keycode == Key.M)
+            {
+                OpenMenu();
+                GetViewport().SetInputAsHandled();
+            }
+            else if (key.PhysicalKeycode == Key.Escape || key.Keycode == Key.Escape)
             {
                 Input.MouseMode = Input.MouseModeEnum.Visible;
                 GetViewport().SetInputAsHandled();
@@ -104,6 +141,30 @@ public partial class RoomViewer : Node3D
                 GetViewport().SetInputAsHandled();
             }
         }
+    }
+
+    public void OpenMenu()
+    {
+        Player.Enabled = false;
+        Input.MouseMode = Input.MouseModeEnum.Visible;
+        Hud.SetErrorVisible(false);
+        Menu.Open(DatabasePath, Room?.Id, canClose: _loaded || Hud.HasError);
+    }
+
+    public void CloseMenu()
+    {
+        if (!Menu.CanClose) return;
+        Menu.Close();
+        Hud.SetErrorVisible(true);
+        Player.Enabled = _loaded;
+        if (_loaded && DisplayServer.GetName() != "headless") Input.MouseMode = Input.MouseModeEnum.Captured;
+    }
+
+    // Rebuilds the scene for the chosen Room. CLI image overrides applied only to the starting Room.
+    private void LoadRoom(long roomId)
+    {
+        s_pendingSelection = new ViewerOptions(roomId, DatabasePath);
+        GetTree().CallDeferred(SceneTree.MethodName.ReloadCurrentScene);
     }
 
     public void ToggleText()
@@ -148,8 +209,9 @@ public partial class RoomViewer : Node3D
     public override void _Process(double delta)
     {
         var captured = Input.MouseMode == Input.MouseModeEnum.Captured;
-        var focus = FindFocusedDisplay();
-        Hud.UpdateState(Displays.Count(d => d.Billboard.Visible), Room?.Loci.Count ?? 0, MarkersVisible, captured, focus);
+        var focus = Menu.IsOpen ? null : FindFocusedDisplay();
+        // The open menu stands in for the "mouse released" hint.
+        Hud.UpdateState(Displays.Count(d => d.Billboard.Visible), Room?.Loci.Count ?? 0, MarkersVisible, captured || Menu.IsOpen, focus);
         Hud.Map.PlayerPosition = Player.GlobalPosition;
         Hud.Map.PlayerForward = -Player.Camera.GlobalBasis.Z;
         Hud.Map.QueueRedraw();
@@ -160,7 +222,9 @@ public partial class RoomViewer : Node3D
     {
         foreach (var (action, key) in new[] { ("walk_forward", Key.W), ("walk_back", Key.S), ("walk_left", Key.A), ("walk_right", Key.D) })
         {
-            if (!InputMap.HasAction(action)) InputMap.AddAction(action);
+            // Actions persist across scene reloads; register each key once.
+            if (InputMap.HasAction(action)) continue;
+            InputMap.AddAction(action);
             InputMap.ActionAddEvent(action, new InputEventKey { PhysicalKeycode = key });
         }
     }

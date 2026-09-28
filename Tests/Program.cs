@@ -178,6 +178,51 @@ Test("Room depth exceeds width", () => Check(RoomLayout.Depth > RoomLayout.Width
 Test("Anchors are unique", () => Check(Enumerable.Range(1,26).Select(RoomLayout.Anchor).Distinct().Count() == 26, "duplicate Anchor"));
 Test("Presentations are inside room", () => Check(Enumerable.Range(1,26).Select(RoomLayout.Presentation).All(p => Math.Abs(p.X)<6 && Math.Abs(p.Z)<9 && p.Y>0 && p.Y<7), "text inset"));
 
+Test("Menu mode allows a missing Room ID", () =>
+{
+    var options = ViewerOptions.Parse(["--db", "menu.db"], requireRoom: false);
+    Check(!options.HasRoom && options.DatabasePath == "menu.db", "menu options");
+    Check(ViewerOptions.Parse(["--room", "8"], requireRoom: false).HasRoom, "explicit Room still loads");
+});
+Test("Catalog without Palaces lists every Room in one group", () =>
+{
+    var catalog = new PalaceCatalog().Load(fixture);
+    var group = catalog.Single();
+    Check(group.Id == PalaceCatalog.UngroupedPalaceId && group.Rooms.Count == 8, "one ungrouped list");
+    Check(group.Rooms.Single(r => r.Id == 7).LociCount == 29 && group.Rooms.Single(r => r.Id == 24).Title.Contains("untitled"), "counts and titles");
+    Check(group.Rooms.All(r => !r.HasImages && r.Missing == 0 && r.ImageSummary == "No images"), "no image columns");
+});
+Test("Catalog groups Rooms by Palace and reports image files", () =>
+{
+    var palaceDatabase = Path.Combine(directory, "palaces.db");
+    var images = Path.Combine(directory, "palace images");
+    Directory.CreateDirectory(images);
+    File.WriteAllBytes(Path.Combine(images, "left.png"), [1]);
+    using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = palaceDatabase, Pooling = false }.ToString()))
+    {
+        connection.Open();
+        Execute(connection, $"""
+            CREATE TABLE Palaces (Id INTEGER PRIMARY KEY, Name TEXT NOT NULL, Description TEXT);
+            CREATE TABLE Rooms (Id INTEGER PRIMARY KEY, PalaceId INTEGER, Title TEXT NOT NULL,
+              LeftImagePath TEXT, RightImagePath TEXT, ForwardImagePath TEXT, BackImagePath TEXT, FloorImagePath TEXT, CeilingImagePath TEXT);
+            CREATE TABLE Loci (Id INTEGER PRIMARY KEY, RoomId INTEGER, Position INTEGER, Text TEXT);
+            INSERT INTO Palaces VALUES (1, 'Apartment', 'Okta'), (2, 'Empty palace', NULL);
+            INSERT INTO Rooms (Id, PalaceId, Title, LeftImagePath, RightImagePath, FloorImagePath) VALUES
+              (5, 1, 'Pictured', 'palace images/left.png', 'palace images/absent.png', '  '),
+              (6, 1, 'Plain', NULL, NULL, NULL), (7, 99, 'Orphan', NULL, NULL, NULL);
+            INSERT INTO Loci VALUES (1, 5, 1, 'a'), (2, 5, 2, 'b');
+            """);
+    }
+    var catalog = new PalaceCatalog().Load(palaceDatabase);
+    Check(catalog.Select(p => p.Name).SequenceEqual(["Apartment", "Empty palace", "Rooms without a Palace"]), "palace groups");
+    var pictured = catalog[0].Rooms[0];
+    Check(pictured.LociCount == 2 && pictured.Found == 1 && pictured.Missing == 1 && catalog[0].RoomsWithImages == 1, "image counts");
+    Check(pictured.Images.Single(i => i.Wall == RoomWall.Left).FullPath == Path.Combine(images, "left.png"), "relative to database directory");
+    Check(pictured.Images.Single(i => i.Wall == RoomWall.Floor).State == SurfaceImageState.None, "blank path means no image");
+    Check(pictured.ImageSummary == "1/6 images · 1 missing" && catalog[1].Rooms.Count == 0, "summary");
+});
+Test("Catalog reports a missing database", () => Fails(() => new PalaceCatalog().Load(Path.Combine(directory, "absent.db")), "does not exist"));
+
 RoomImageChecks.Run(directory, Test);
 Console.WriteLine($"{count - failures.Count}/{count} checks passed. Fixtures: {directory}");
 return failures.Count == 0 ? 0 : 1;

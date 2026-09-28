@@ -21,14 +21,16 @@ try {
     @'
 # Palace Room Viewer — Windows x64
 
-Keep this whole folder together. Open PowerShell in this folder and run:
+Keep this whole folder together. Double-click PalaceRoomViewer.exe to open the
+Palace menu and choose a Room (press M any time to switch Rooms). To start in a
+specific Room, open PowerShell in this folder and run:
 
     .\PalaceRoomViewer.exe -- --room 8
     .\PalaceRoomViewer.exe -- --room 7 --db 'D:\my data\palace.db'
     .\PalaceRoomViewer.exe -- --room 8 --room-textures 'D:\palace walls'
     .\PalaceRoomViewer.exe -- --room 8 --left 'D:\pictures\left.png' --forward 'D:\pictures\front.jpg'
 
-The Room ID is required. The database defaults to C:\tools\Data\palace.db.
+The Room ID is optional; without it the Palace menu opens. The database defaults to C:\tools\Data\palace.db.
 Use absolute --db and CLI image paths when launching from another directory;
 Godot resolves relative CLI paths from this executable's folder.
 The viewer opens SQLite read-only. Missing inputs show instructions in the window.
@@ -38,7 +40,7 @@ WASD: walk. Mouse: look. J or right-click: toggle all text.
 L or left-click: toggle the Locus under the crosshair.
 K: toggle numbered markers. L works on hidden text and leaves other Loci unchanged.
 J hides all text if any is visible; otherwise it shows all text.
-Escape: release mouse. Click the Room: resume. Alt+F4: close.
+Escape: release mouse. Click the Room: resume. M: Palace menu. Alt+F4: close.
 Aim at a Position with text enabled to read; release the mouse to scroll long text.
 The FRONT wall corresponds to the bottom edge of the room diagrams.
 

@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory=$true)][long]$Room,
+    # Omit -Room to start in the Palace menu.
+    [long]$Room,
     [string]$Database = 'C:\tools\Data\palace.db',
     [string]$Left,
     [string]$Right,
@@ -18,7 +19,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
     & $godot --headless --path $projectRoot --editor --import
     if ($LASTEXITCODE -ne 0) { throw 'Godot import failed.' }
-    $viewerArguments = @('--room', "$Room", '--db', $Database)
+    $viewerArguments = @('--db', $Database)
+    if ($Room) { $viewerArguments += @('--room', "$Room") }
     foreach ($entry in @{left=$Left;right=$Right;forward=$Forward;back=$Back;'room-textures'=$RoomTextures}.GetEnumerator()) {
         if ($entry.Value) { $viewerArguments += @(("--" + $entry.Key), $entry.Value) }
     }

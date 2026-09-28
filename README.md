@@ -12,12 +12,12 @@ Keep the entire `artifacts/windows` folder together. From PowerShell:
 & .\artifacts\windows\PalaceRoomViewer.exe -- --room 7 --db 'C:\tools\Data\palace.db'
 ```
 
-`--room` is required. `--db` defaults to `C:\tools\Data\palace.db` and accepts an
+`--room` is optional: without it the viewer opens the **Palace menu**. `--db` defaults to `C:\tools\Data\palace.db` and accepts an
 absolute path or a path relative to Godot's working directory (the executable
 folder for the Windows export, project root in development). Prefer absolute
 `--db` paths when launching from another directory. The `--` separator passes
 arguments through Godot to the application. Double-clicking without arguments
-shows instructions. Room 8 is a complete example in the reviewed database; Room 7
+opens the Palace menu on the default database. Room 8 is a complete example in the reviewed database; Room 7
 demonstrates warnings for Positions 27–29.
 
 | Control | Action |
@@ -29,7 +29,25 @@ demonstrates warnings for Positions 27–29.
 | K | Toggle numbered markers (initially visible) |
 | Escape | Release the mouse; use scrollbars or select text |
 | Left-click the Room | Capture the mouse and resume walking; also toggle the Locus under the crosshair |
+| M | Open or close the Palace menu |
 | Alt+F4 | Close the viewer |
+
+## Palace menu
+
+Press **M** (or start without `--room`) to choose what to load. The left list shows
+every Palace with how many of its Rooms have background images (e.g. `1/12`). The
+right list shows the selected Palace's Rooms with their Loci count and image status:
+
+- **No images** (grey): none of the six image columns is set.
+- **n/6 images** (teal): n surface images are set and exist on disk.
+- **· m missing** (amber): m paths are set but the file cannot be found.
+
+Selecting a Room lists each surface (LEFT, RIGHT, FRONT, BACK, FLOOR, CEILING) as
+found, MISSING, or none, with the resolved file path. Double-click, press Enter, or
+choose **Load Room** to display it; the menu reloads the database each time it opens,
+so newly added Rooms and images appear without restarting. `--db` carries over to
+Rooms chosen in the menu; image override switches apply only to the starting Room.
+Databases without a `Palaces` table list all Rooms under one group.
 
 The wall marked **FRONT** (teal by default) is the bottom of the original diagrams. The room plan
 keeps this orientation while you turn. Aim near a populated Position with text
@@ -128,6 +146,7 @@ pinned Godot **4.7.2 .NET** editor and matching templates into `.tools/`.
 
 ```powershell
 .\scripts\bootstrap.ps1
+.\scripts\run.ps1            # opens the Palace menu
 .\scripts\run.ps1 -Room 8
 .\scripts\run.ps1 -Room 8 -Database 'D:\my data\palace.db'
 .\scripts\run.ps1 -Room 8 -RoomTextures 'D:\palace walls' -Left 'D:\pictures\left.png'
@@ -163,6 +182,6 @@ Gaps stay empty; an existing empty Room still has all 26 markers.
 Implementation choices and pinned versions are in [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md).
 The original [plan](room-loci.md), [glossary](CONTEXT.md), and
 [database ADR](docs/adr/0001-csharp-godot-reads-palace-db-directly.md) define the scope.
-Database `RoomImage` display, Pegs, editing, learning-session recording, and Room navigation are deferred.
+Database `RoomImage` display, Pegs, editing, learning-session recording, and Previous/Next Room navigation are deferred.
 
 The completed acceptance run and visual notes are recorded in [docs/VALIDATION.md](docs/VALIDATION.md).

@@ -86,7 +86,7 @@ try {
     Invoke-Case 'invalid-positions' @('--room','22','--db',$fixtureDatabase) $true 2 8
     Invoke-Case 'long-text' @('--room','23','--db',$fixtureDatabase) $true 3 0
     Invoke-Case 'missing-room' @('--room','9999','--db',$fixtureDatabase) $false -ErrorContains 'does not exist'
-    Invoke-Case 'missing-arguments' @() $false -ErrorContains '--room'
+    Invoke-Case 'menu-without-room' @('--db',$fixtureDatabase) $false
     Invoke-Case 'invalid-id' @('--room','oops') $false -ErrorContains 'Invalid Room ID'
     Invoke-Case 'missing-file' @('--room','8','--db',(Join-Path $fixtures 'never-created.db')) $false -ErrorContains 'does not exist'
     Invoke-Case 'bad-schema' @('--room','8','--db',(Join-Path $fixtures 'bad-schema.db')) $false -ErrorContains 'schema'

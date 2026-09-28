@@ -5,9 +5,9 @@ namespace PalaceRoomViewer;
 
 public partial class ViewerHud : CanvasLayer
 {
-    private static readonly Color Ink = new("e9edea");
-    private static readonly Color Muted = new("93a7ac");
-    private static readonly Color Accent = new("88d8c4");
+    internal static readonly Color Ink = new("e9edea");
+    internal static readonly Color Muted = new("93a7ac");
+    internal static readonly Color Accent = new("88d8c4");
     private Control _root = null!;
     private Label _title = null!;
     private Label _subtitle = null!;
@@ -25,8 +25,11 @@ public partial class ViewerHud : CanvasLayer
     private Label _warningsTitle = null!;
     private RichTextLabel _warningsText = null!;
     private long? _readingId;
+    private bool _hasError;
+    private bool _roomLoaded;
     public RoomMap Map { get; private set; } = null!;
-    public bool HasError => _errorPanel.Visible;
+    public event Action? ChooseRoomRequested;
+    public bool HasError => _hasError;
     public string ErrorText => _errorText.Text;
     public string WarningText => _warningsText.Text;
     public bool ReadingVisible => _readingPanel.Visible;
@@ -69,10 +72,10 @@ public partial class ViewerHud : CanvasLayer
         _crosshair.OffsetTop = -15; _crosshair.OffsetBottom = 15;
         _crosshair.HorizontalAlignment = HorizontalAlignment.Center;
 
-        var controls = Panel(24, -85, 630, -24, false, true);
+        var controls = Panel(24, -85, 700, -24, false, true);
         var controlsBox = Column(controls);
         controlsBox.AddChild(Text("WASD   Walk    MOUSE   Look    J   All text    L   This text    K   Markers", 14, Ink));
-        controlsBox.AddChild(Text("LEFT CLICK   This text    RIGHT CLICK   All text    ESC   Release mouse", 12, Muted));
+        controlsBox.AddChild(Text("LEFT CLICK   This text    RIGHT CLICK   All text    ESC   Release mouse    M   Palaces", 12, Muted));
 
         _readingPanel = Panel(24, -306, 630, -103, false, true);
         _readingPanel.Visible = false;
@@ -118,13 +121,20 @@ public partial class ViewerHud : CanvasLayer
         _errorText.CustomMinimumSize = new(0, 190);
         _errorText.SizeFlagsVertical = Control.SizeFlags.ExpandFill;
         errorBox.AddChild(_errorText);
-        var quit = new Button { Text = "Close viewer", CustomMinimumSize = new(0, 40) };
+        var errorButtons = new HBoxContainer();
+        errorButtons.AddThemeConstantOverride("separation", 10);
+        errorBox.AddChild(errorButtons);
+        var choose = new Button { Text = "Choose a Room", CustomMinimumSize = new(0, 40), SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
+        choose.Pressed += () => ChooseRoomRequested?.Invoke();
+        errorButtons.AddChild(choose);
+        var quit = new Button { Text = "Close viewer", CustomMinimumSize = new(0, 40), SizeFlagsHorizontal = Control.SizeFlags.ExpandFill };
         quit.Pressed += () => GetTree().Quit();
-        errorBox.AddChild(quit);
+        errorButtons.AddChild(quit);
     }
 
     public void ShowRoom(RoomSnapshot room, IReadOnlyList<string>? textureWarnings = null)
     {
+        _roomLoaded = true;
         _title.Text = room.Title;
         _subtitle.Text = $"ROOM {room.Id:00}   /   {room.Loci.Count} of 26 Positions populated" + (room.Loci.Count == 0 ? "   /   Empty Room" : "");
         textureWarnings ??= [];
@@ -136,12 +146,22 @@ public partial class ViewerHud : CanvasLayer
         _warningsText.Text = string.Join("\n\n", room.Warnings.Select(w => w.ToString()).Concat(textureWarnings));
     }
 
+    public void ShowNoRoom()
+    {
+        _title.Text = "Select a Room to begin";
+        _subtitle.Text = "Press M to choose a Palace and Room.";
+    }
+
+    // The Palace menu hides a load error while it is open; the error returns if the menu closes.
+    public void SetErrorVisible(bool visible) => _errorPanel.Visible = visible && _hasError;
+
     public void ShowError(string message)
     {
         _errorText.Text = message;
+        _hasError = true;
         _errorPanel.Visible = true;
         _title.Text = "Select a Room to begin";
-        _subtitle.Text = "Pass a Room ID when starting the viewer.";
+        _subtitle.Text = "Choose a Room, or pass a Room ID when starting the viewer.";
         _readingPanel.Visible = false;
     }
 
@@ -153,7 +173,7 @@ public partial class ViewerHud : CanvasLayer
             ? $"L   {(focus.Billboard.Visible ? "Hide" : "Show")} text · Position {focus.PositionNumber:00}"
             : focus is not null ? $"Position {focus.PositionNumber:00} · Empty" : "L   Aim at a Position";
         _crosshair.Modulate = focus?.Locus is not null ? Accent : Colors.White;
-        _pauseHint.Text = captured || HasError ? "" : "Mouse released · Click the Room to continue";
+        _pauseHint.Text = captured || HasError ? "" : _roomLoaded ? "Mouse released · Click the Room to continue" : "Press M to choose a Room";
     }
 
     public void ShowReading(LocusDisplay? display)
@@ -177,7 +197,7 @@ public partial class ViewerHud : CanvasLayer
         return panel;
     }
 
-    private static StyleBoxFlat Surface() => new()
+    internal static StyleBoxFlat Surface() => new()
     {
         BgColor = new Color(.035f, .065f, .085f, .94f),
         BorderColor = new Color("30434c"), BorderWidthBottom = 1, BorderWidthTop = 1,
@@ -187,7 +207,7 @@ public partial class ViewerHud : CanvasLayer
         ContentMarginLeft = 18, ContentMarginRight = 18, ContentMarginTop = 13, ContentMarginBottom = 13
     };
 
-    private static VBoxContainer Column(PanelContainer panel)
+    internal static VBoxContainer Column(PanelContainer panel)
     {
         var column = new VBoxContainer();
         column.AddThemeConstantOverride("separation", 6);
@@ -195,7 +215,7 @@ public partial class ViewerHud : CanvasLayer
         return column;
     }
 
-    private static Label Text(string text, int size, Color color)
+    internal static Label Text(string text, int size, Color color)
     {
         var label = new Label { Text = text, MouseFilter = Control.MouseFilterEnum.Ignore };
         label.AddThemeFontSizeOverride("font_size", size);
@@ -203,7 +223,7 @@ public partial class ViewerHud : CanvasLayer
         return label;
     }
 
-    private static RichTextLabel RichText(int size)
+    internal static RichTextLabel RichText(int size)
     {
         var text = new RichTextLabel { BbcodeEnabled = false, SelectionEnabled = true, ScrollActive = true };
         text.AddThemeFontSizeOverride("normal_font_size", size);
