@@ -33,7 +33,8 @@ specific Room, open PowerShell in this folder and run:
 The Room ID is optional; without it the Palace menu opens. The database defaults to C:\tools\Data\palace.db.
 Use absolute --db and CLI image paths when launching from another directory;
 Godot resolves relative CLI paths from this executable's folder.
-The viewer opens SQLite read-only. Missing inputs show instructions in the window.
+Rooms are loaded read-only. The only write is one row in the RehearsalRuns table
+(created on first use) per completed rehearsal. Missing inputs show instructions in the window.
 Godot, a .NET installation, and the shared C:\tools\e_sqlite3.dll are not required.
 
 WASD: walk. Mouse: look. J or right-click: toggle all text.
@@ -42,7 +43,9 @@ K: toggle numbered markers. L works on hidden text and leaves other Loci unchang
 J hides all text if any is visible; otherwise it shows all text.
 Escape: release mouse. Click the Room: resume. M: Palace menu. Alt+F4: close.
 R: rehearse the Room in order. Space reveals; 1 = missed, 2 = knew it.
-Misses repeat until a clean round. R again stops.
+Misses repeat until a clean round. R again stops. V: sound on/off.
+Each rehearsal is timed and scored: beat your best time, chase medals
+(Bronze to Platinum), keep a daily streak, and unlock trophies (Palace menu).
 Aim at a Position with text enabled to read; release the mouse to scroll long text.
 The FRONT wall corresponds to the bottom edge of the room diagrams.
 

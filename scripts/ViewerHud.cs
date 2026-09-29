@@ -27,8 +27,9 @@ public partial class ViewerHud : CanvasLayer
     private PanelContainer _rehearsalPanel = null!;
     private Label _rehearsalTitle = null!;
     private Label _rehearsalTarget = null!;
-    private Label _rehearsalProgress = null!;
+    private RichTextLabel _rehearsalLive = null!;
     private Label _rehearsalPrompt = null!;
+    private CpuParticles2D _confetti = null!;
     private long? _readingId;
     private bool _hasError;
     private bool _roomLoaded;
@@ -39,7 +40,7 @@ public partial class ViewerHud : CanvasLayer
     public string WarningText => _warningsText.Text;
     public bool ReadingVisible => _readingPanel.Visible;
     public bool RehearsalVisible => _rehearsalPanel.Visible;
-    public string RehearsalText => string.Join("\n", _rehearsalTitle.Text, _rehearsalTarget.Text, _rehearsalProgress.Text, _rehearsalPrompt.Text);
+    public string RehearsalText => string.Join("\n", _rehearsalTitle.Text, _rehearsalTarget.Text, _rehearsalLive.GetParsedText(), _rehearsalPrompt.Text);
 
     public override void _Ready()
     {
@@ -82,7 +83,7 @@ public partial class ViewerHud : CanvasLayer
         var controls = Panel(24, -85, 790, -24, false, true);
         var controlsBox = Column(controls);
         controlsBox.AddChild(Text("WASD   Walk    MOUSE   Look    J   All text    L   This text    K   Markers    R   Rehearse", 14, Ink));
-        controlsBox.AddChild(Text("LEFT CLICK   This text    RIGHT CLICK   All text    ESC   Release mouse    M   Palaces", 12, Muted));
+        controlsBox.AddChild(Text("LEFT CLICK   This text    RIGHT CLICK   All text    ESC   Release mouse    M   Palaces    V   Sound", 12, Muted));
 
         _readingPanel = Panel(24, -306, 630, -103, false, true);
         _readingPanel.Visible = false;
@@ -98,18 +99,39 @@ public partial class ViewerHud : CanvasLayer
         _rehearsalPanel.AddThemeStyleboxOverride("panel", Surface());
         _root.AddChild(_rehearsalPanel);
         _rehearsalPanel.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.CenterTop);
-        _rehearsalPanel.OffsetLeft = -290; _rehearsalPanel.OffsetRight = 290;
-        _rehearsalPanel.OffsetTop = 126; _rehearsalPanel.OffsetBottom = 262;
+        // Grows downward to fit the result summary.
+        _rehearsalPanel.OffsetLeft = -330; _rehearsalPanel.OffsetRight = 330;
+        _rehearsalPanel.OffsetTop = 126; _rehearsalPanel.OffsetBottom = 126;
         var rehearsalBox = Column(_rehearsalPanel);
         _rehearsalTitle = Text("", 12, Accent);
         rehearsalBox.AddChild(_rehearsalTitle);
         _rehearsalTarget = Text("", 24, Ink);
         rehearsalBox.AddChild(_rehearsalTarget);
-        _rehearsalProgress = Text("", 13, Muted);
-        _rehearsalProgress.AutowrapMode = TextServer.AutowrapMode.WordSmart;
-        rehearsalBox.AddChild(_rehearsalProgress);
+        _rehearsalLive = new RichTextLabel
+        {
+            BbcodeEnabled = true, FitContent = true, ScrollActive = false,
+            AutowrapMode = TextServer.AutowrapMode.WordSmart, MouseFilter = Control.MouseFilterEnum.Ignore
+        };
+        _rehearsalLive.AddThemeFontSizeOverride("normal_font_size", 14);
+        _rehearsalLive.AddThemeFontSizeOverride("bold_font_size", 14);
+        _rehearsalLive.AddThemeColorOverride("default_color", Ink);
+        rehearsalBox.AddChild(_rehearsalLive);
         _rehearsalPrompt = Text("", 16, new Color("f1d39b"));
         rehearsalBox.AddChild(_rehearsalPrompt);
+
+        _confetti = new CpuParticles2D
+        {
+            Emitting = false, OneShot = true, Amount = 180, Lifetime = 2.4, Explosiveness = .95f,
+            Direction = new(0, -1), Spread = 80, InitialVelocityMin = 380, InitialVelocityMax = 820,
+            Gravity = new(0, 900), ScaleAmountMin = 5, ScaleAmountMax = 10,
+            ColorInitialRamp = new Gradient
+            {
+                InterpolationMode = Gradient.InterpolationModeEnum.Constant,
+                Offsets = [0, .2f, .4f, .6f, .8f],
+                Colors = [new("f1c55b"), new("88d8c4"), new("ee8a6b"), new("bfe6ff"), new("f2eee4")]
+            }
+        };
+        AddChild(_confetti);
 
         _warningsPanel = Panel(-394, 126, -24, 362, true);
         _warningsPanel.Visible = false;
@@ -200,27 +222,73 @@ public partial class ViewerHud : CanvasLayer
         _pauseHint.Text = captured || HasError ? "" : _roomLoaded ? "Mouse released · Click the Room to continue" : "Press M to choose a Room";
     }
 
-    public void ShowRehearsal(RehearsalSession session)
+    // Called every frame while rehearsing; labels only change when their text does.
+    // feedback is BBCode for the last answer, e.g. "+180   −1.3 s".
+    public void ShowRehearsal(RehearsalSession session, long elapsedMs, RehearsalRun? best, string feedback)
     {
+        if (session.Current is not { } position) return;
         _rehearsalPanel.Visible = true;
-        if (session.Current is not { } position)
-        {
-            var firstPass = session.Positions.Count - session.FirstPassMisses.Count;
-            _rehearsalTitle.Text = "R E H E A R S E   /   R O O M   C L E A R";
-            _rehearsalTarget.Text = $"{firstPass} of {session.Positions.Count} on the first pass";
-            _rehearsalProgress.Text = (session.Round == 1 ? "Perfect walk-through." : $"Cleared in {session.Round} rounds.") +
-                (session.FirstPassMisses.Count > 0 ? "   First-pass misses: " + string.Join(", ", session.FirstPassMisses.Select(p => p.ToString("00"))) : "");
-            _rehearsalPrompt.Text = "SPACE   Rehearse again        R   Done";
-            return;
-        }
-        _rehearsalTitle.Text = session.Round == 1 ? "R E H E A R S E   /   R O U N D   1   ·   W H O L E   R O O M"
-            : $"R E H E A R S E   /   R O U N D   {session.Round}   ·   M I S S E S   O N L Y";
-        _rehearsalTarget.Text = $"Position {position:00}   ·   {RoomLayout.Description(position)}";
-        _rehearsalProgress.Text = $"{session.IndexInRound + 1} of {session.RoundPositions.Count}   ·   {session.RoundMisses.Count} missed this round";
-        _rehearsalPrompt.Text = session.Revealed ? "1   Missed        2   Knew it" : "Recall it, then   SPACE   Reveal";
+        Set(_rehearsalTitle, session.Round == 1 ? "R E H E A R S E   /   R O U N D   1   ·   W H O L E   R O O M"
+            : $"R E H E A R S E   /   R O U N D   {session.Round}   ·   M I S S E S   O N L Y");
+        Set(_rehearsalTarget, $"Position {position:00}   ·   {RoomLayout.Description(position)}");
+        _rehearsalTarget.AddThemeColorOverride("font_color", Ink);
+        var bestText = best is null ? "[color=#93a7ac]first clear sets the target[/color]" : $"[color=#93a7ac]BEST[/color]  {RehearsalScoring.FormatTime(best.DurationMs)}";
+        var combo = session.Round == 1 && session.Combo >= 2 ? $"      [color=#f1d39b]COMBO ×{session.Combo}[/color]" : "";
+        SetRich(_rehearsalLive,
+            $"[color=#93a7ac]TIME[/color]  [b]{RehearsalScoring.FormatTime(elapsedMs)}[/b]      {bestText}      " +
+            $"[color=#93a7ac]SCORE[/color]  {session.Score:N0}{combo}\n" +
+            $"[color=#93a7ac]{session.IndexInRound + 1} of {session.RoundPositions.Count}   ·   {session.RoundMisses.Count} missed this round[/color]      {feedback}");
+        Set(_rehearsalPrompt, session.Revealed ? "1   Missed        2   Knew it        V   Sound" : "Recall it, then   SPACE   Reveal");
+    }
+
+    public void ShowRehearsalResult(RehearsalOutcome outcome)
+    {
+        var run = outcome.Run;
+        _rehearsalPanel.Visible = true;
+        Set(_rehearsalTitle, "R E H E A R S E   /   R O O M   C L E A R");
+        Set(_rehearsalTarget, $"{run.Medal.ToString().ToUpperInvariant()}   ·   {RehearsalScoring.FormatTime(run.DurationMs)}");
+        _rehearsalTarget.AddThemeColorOverride("font_color", MedalColor(run.Medal));
+        var lines = new List<string>();
+        if (outcome.FirstClear) lines.Add("[color=#f1d39b]FIRST CLEAR[/color]   This is your time to beat.");
+        else if (outcome.NewBestTime)
+            lines.Add($"[color=#f1d39b][b]NEW PERSONAL BEST[/b][/color]   [color=#88d8c4]{RehearsalScoring.FormatDelta(run.DurationMs - outcome.PreviousBestMs!.Value)}[/color]   (was {RehearsalScoring.FormatTime(outcome.PreviousBestMs.Value)})");
+        else
+            lines.Add($"Best {RehearsalScoring.FormatTime(outcome.PreviousBestMs!.Value)}   [color=#ee8a6b]{RehearsalScoring.FormatDelta(run.DurationMs - outcome.PreviousBestMs.Value)}[/color]   So close. Go again?");
+        lines.Add($"{run.FirstPassKnown} of {run.LociCount} on the first pass   ·   " +
+            (run.Rounds == 1 ? "flawless" : $"{run.Rounds} rounds") + $"   ·   best combo ×{run.BestCombo}" +
+            (outcome.NewBestCombo ? "  [color=#f1d39b]NEW[/color]" : ""));
+        if (!run.Perfect) lines.Add("[color=#93a7ac]First-pass misses: " + string.Join(", ", run.MissesByRound[0].Select(p => p.ToString("00"))) + "[/color]");
+        lines.Add($"Score  [b]{run.Score:N0}[/b]" + (outcome.NewHighScore ? "   [color=#f1d39b]NEW HIGH SCORE[/color]" : "") +
+            $"      [color=#f1d39b]Day {outcome.StreakDays} streak[/color]");
+        if (outcome.Unlocked.Count > 0)
+            lines.Add("[color=#f1d39b]UNLOCKED[/color]   " + string.Join("   ·   ", outcome.Unlocked.Select(a => $"[b]{a.Name}[/b]")));
+        if (outcome.SaveError is { } error) lines.Add($"[color=#edbf7f]Not saved: {error.Replace("[", "[lb]")}[/color]");
+        SetRich(_rehearsalLive, string.Join("\n", lines));
+        Set(_rehearsalPrompt, "SPACE   Rehearse again        R   Done        M   Palaces");
     }
 
     public void HideRehearsal() => _rehearsalPanel.Visible = false;
+
+    // Confetti burst and a warm flash of the rehearsal panel.
+    public void Celebrate()
+    {
+        _confetti.Position = new(GetViewport().GetVisibleRect().Size.X / 2, 190);
+        _confetti.Restart();
+        _confetti.Emitting = true;
+        CreateTween().TweenProperty(_rehearsalPanel, "modulate", Colors.White, .9).From(new Color(1.7f, 1.45f, .85f));
+    }
+
+    public static Color MedalColor(Medal medal) => medal switch
+    {
+        Medal.Platinum => new Color("bfe6ff"),
+        Medal.Gold => new Color("f1c55b"),
+        Medal.Silver => new Color("c9d3d6"),
+        Medal.Bronze => new Color("d39a6a"),
+        _ => Muted
+    };
+
+    private static void Set(Label label, string text) { if (label.Text != text) label.Text = text; }
+    private static void SetRich(RichTextLabel label, string text) { if (label.Text != text) label.Text = text; }
 
     public void ShowReading(LocusDisplay? display)
     {

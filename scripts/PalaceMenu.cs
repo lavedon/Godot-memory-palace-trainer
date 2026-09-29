@@ -4,7 +4,8 @@ using PalaceRoomViewer.Core;
 namespace PalaceRoomViewer;
 
 // Palace → Room picker. Lists every Room with its Loci count and whether its six
-// surface images are set in palace.db and present on disk. Opened with M.
+// surface images are set in palace.db and present on disk, plus rehearsal bests,
+// the daily streak, and trophies. Opened with M.
 public partial class PalaceMenu : CanvasLayer
 {
     private static readonly Color Found = new("88d8c4");
@@ -18,6 +19,11 @@ public partial class PalaceMenu : CanvasLayer
     private Button _load = null!;
     private Button _close = null!;
     private Label _hint = null!;
+    private Label _stats = null!;
+    private Button _trophies = null!;
+    private bool _showingTrophies;
+    private IReadOnlyList<RehearsalRun> _runs = [];
+    private IReadOnlyDictionary<long, RoomProgress> _progress = new Dictionary<long, RoomProgress>();
     private IReadOnlyList<PalaceSummary> _catalog = [];
     private long? _currentRoomId;
     public event Action<long>? RoomChosen;
@@ -26,6 +32,9 @@ public partial class PalaceMenu : CanvasLayer
     // False when there is nothing to return to (no Room loaded and no error to show).
     public bool CanClose => !_close.Disabled;
     public IReadOnlyList<PalaceSummary> Catalog => _catalog;
+    public IReadOnlyList<RehearsalRun> Runs => _runs;
+    public string DetailsText => _details.GetParsedText();
+    public string StatsText => _stats.Text;
 
     public override void _Ready()
     {
@@ -49,6 +58,8 @@ public partial class PalaceMenu : CanvasLayer
         _database = ViewerHud.Text("", 12, ViewerHud.Muted);
         _database.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
         column.AddChild(_database);
+        _stats = ViewerHud.Text("", 14, new Color("f1d39b"));
+        column.AddChild(_stats);
 
         var body = new HBoxContainer { SizeFlagsVertical = Control.SizeFlags.ExpandFill };
         body.AddThemeConstantOverride("separation", 16);
@@ -59,7 +70,7 @@ public partial class PalaceMenu : CanvasLayer
         palaceColumn.AddChild(ViewerHud.Text("PALACES", 12, ViewerHud.Muted));
         _palaces = new Tree
         {
-            Columns = 2, HideRoot = true, ColumnTitlesVisible = true,
+            Columns = 3, HideRoot = true, ColumnTitlesVisible = true,
             SelectMode = Tree.SelectModeEnum.Row, SizeFlagsVertical = Control.SizeFlags.ExpandFill
         };
         _palaces.AddThemeFontSizeOverride("font_size", 15);
@@ -67,6 +78,9 @@ public partial class PalaceMenu : CanvasLayer
         _palaces.SetColumnTitle(1, "Imaged");
         _palaces.SetColumnExpand(1, false);
         _palaces.SetColumnCustomMinimumWidth(1, 80);
+        _palaces.SetColumnTitle(2, "Gold+");
+        _palaces.SetColumnExpand(2, false);
+        _palaces.SetColumnCustomMinimumWidth(2, 70);
         _palaces.ItemSelected += () => ShowPalace(_palaces.GetSelected()?.GetMetadata(0).AsInt32() ?? -1);
         palaceColumn.AddChild(_palaces);
 
@@ -76,17 +90,22 @@ public partial class PalaceMenu : CanvasLayer
         roomColumn.AddChild(_roomsTitle);
         _rooms = new Tree
         {
-            Columns = 3, HideRoot = true, ColumnTitlesVisible = true,
+            Columns = 4, HideRoot = true, ColumnTitlesVisible = true,
             SelectMode = Tree.SelectModeEnum.Row, SizeFlagsVertical = Control.SizeFlags.ExpandFill
         };
         _rooms.AddThemeFontSizeOverride("font_size", 15);
         _rooms.SetColumnTitle(0, "Room");
         _rooms.SetColumnTitle(1, "Loci");
-        _rooms.SetColumnTitle(2, "Background images");
+        // Long titles clip (full title in the tooltip) so every column stays visible.
+        _rooms.SetColumnClipContent(0, true);
+        _rooms.SetColumnTitle(2, "Best time");
+        _rooms.SetColumnTitle(3, "Background images");
         _rooms.SetColumnExpand(1, false);
         _rooms.SetColumnCustomMinimumWidth(1, 60);
         _rooms.SetColumnExpand(2, false);
-        _rooms.SetColumnCustomMinimumWidth(2, 190);
+        _rooms.SetColumnCustomMinimumWidth(2, 170);
+        _rooms.SetColumnExpand(3, false);
+        _rooms.SetColumnCustomMinimumWidth(3, 190);
         _rooms.ItemSelected += ShowSelectedRoom;
         _rooms.ItemActivated += LoadSelected;
         roomColumn.AddChild(_rooms);
@@ -102,6 +121,13 @@ public partial class PalaceMenu : CanvasLayer
         _hint = ViewerHud.Text("", 12, ViewerHud.Muted);
         _hint.SizeFlagsHorizontal = Control.SizeFlags.ExpandFill;
         buttons.AddChild(_hint);
+        _trophies = new Button { Text = "Trophies", CustomMinimumSize = new(120, 38), ToggleMode = true };
+        _trophies.Toggled += on =>
+        {
+            _showingTrophies = on;
+            if (on) ShowTrophies(); else ShowSelectedRoom();
+        };
+        buttons.AddChild(_trophies);
         _close = new Button { Text = "Close", CustomMinimumSize = new(110, 38) };
         _close.Pressed += () => CloseRequested?.Invoke();
         buttons.AddChild(_close);
@@ -110,8 +136,11 @@ public partial class PalaceMenu : CanvasLayer
         buttons.AddChild(_load);
     }
 
-    public void Open(string databasePath, long? currentRoomId, bool canClose)
+    public void Open(string databasePath, long? currentRoomId, bool canClose, string? progressDatabasePath = null)
     {
+        _showingTrophies = false;
+        _trophies.SetPressedNoSignal(false);
+        LoadProgress(progressDatabasePath ?? databasePath);
         _currentRoomId = currentRoomId;
         _close.Disabled = !canClose;
         _hint.Text = "Double-click or Enter loads a Room" + (canClose ? "   ·   M or Esc closes" : "");
@@ -153,6 +182,10 @@ public partial class PalaceMenu : CanvasLayer
             item.SetText(1, $"{palace.RoomsWithImages}/{palace.Rooms.Count}");
             item.SetTextAlignment(1, HorizontalAlignment.Center);
             item.SetCustomColor(1, palace.RoomsWithImages > 0 ? Found : ViewerHud.Muted);
+            var golden = palace.Rooms.Count(r => Progress(r.Id)?.BestMedal >= Medal.Gold);
+            item.SetText(2, $"{golden}/{palace.Rooms.Count}");
+            item.SetTextAlignment(2, HorizontalAlignment.Center);
+            item.SetCustomColor(2, golden > 0 ? ViewerHud.MedalColor(Medal.Gold) : ViewerHud.Muted);
             if (i == start) startItem = item;
         }
         startItem?.Select(0);
@@ -189,8 +222,12 @@ public partial class PalaceMenu : CanvasLayer
             item.SetTooltipText(0, room.Title);
             item.SetText(1, room.LociCount.ToString());
             item.SetTextAlignment(1, HorizontalAlignment.Center);
-            item.SetText(2, room.ImageSummary);
-            item.SetCustomColor(2, room.Missing > 0 ? Missing : room.HasImages ? Found : ViewerHud.Muted);
+            var progress = Progress(room.Id);
+            item.SetText(2, progress?.Fastest is { } fastest
+                ? $"{RehearsalScoring.FormatTime(fastest.DurationMs)}   {progress.BestMedal.ToString().ToUpperInvariant()}" : "not yet");
+            item.SetCustomColor(2, ViewerHud.MedalColor(progress?.BestMedal ?? Medal.None));
+            item.SetText(3, room.ImageSummary);
+            item.SetCustomColor(3, room.Missing > 0 ? Missing : room.HasImages ? Found : ViewerHud.Muted);
             if (room.Id == _currentRoomId) current = item;
         }
         if (palace.Rooms.Count == 0) _details.Text = "This Palace has no Rooms yet.";
@@ -210,7 +247,7 @@ public partial class PalaceMenu : CanvasLayer
     {
         var room = SelectedRoom();
         _load.Disabled = room is null;
-        if (room is null) return;
+        if (room is null || _showingTrophies) return;
         var header = $"[b]Room {room.Id}[/b] · {Plural(room.LociCount, "Locus", "Loci")} · {room.ImageSummary}" +
             (room.Id == _currentRoomId ? "   [color=#93a7ac](currently loaded)[/color]" : "");
         var cells = new List<string>();
@@ -226,8 +263,51 @@ public partial class PalaceMenu : CanvasLayer
             var path = image.State == SurfaceImageState.None ? "default surface" : Escape(image.FullPath ?? image.StoredPath ?? "");
             cells.Add($"[cell padding=0,2,24,2]{name}[/cell][cell padding=0,2,24,2][color=#{color.ToHtml(false)}]{state}[/color][/cell][cell][color=#93a7ac]{path}[/color][/cell]");
         }
-        _details.Text = $"{header}\n[table=3]{string.Concat(cells)}[/table]";
+        _details.Text = $"{header}\n{ProgressSummary(room)}[table=3]{string.Concat(cells)}[/table]";
     }
+
+    private RoomProgress? Progress(long roomId) => _progress.GetValueOrDefault(roomId);
+
+    // History is read from palace.db on every open. A locked or unreadable table only hides stats.
+    private void LoadProgress(string progressDatabasePath)
+    {
+        try { _runs = new RehearsalStore().Load(progressDatabasePath); }
+        catch (Exception ex)
+        {
+            _runs = [];
+            GD.PrintErr(ex.Message);
+        }
+        _progress = RoomProgress.ByRoom(_runs);
+        var streak = RehearsalStreak.Days(_runs.Select(r => r.Day), DateOnly.FromDateTime(DateTime.Now));
+        var trophies = Achievements.Unlocked(_runs).Count;
+        var medals = _progress.Values.GroupBy(p => p.BestMedal).Where(g => g.Key >= Medal.Gold).OrderByDescending(g => g.Key)
+            .Select(g => $"{g.Count()} {g.Key}");
+        _stats.Text = _runs.Count == 0 ? "No rehearsals yet. Load a Room and press R to set your first time."
+            : $"Day {streak} streak   ·   {Plural(_runs.Count, "rehearsal")}   ·   {trophies} of {Achievements.All.Count} trophies" +
+              string.Concat(medals.Select(m => "   ·   " + m));
+    }
+
+    private string ProgressSummary(RoomSummary room)
+    {
+        if (Progress(room.Id) is not { } progress) return "[color=#93a7ac]Not rehearsed yet. Load it and press R.[/color]\n";
+        var medal = progress.BestMedal;
+        var perfect = progress.FastestPerfect is { } p ? RehearsalScoring.FormatTime(p.DurationMs) : "none yet";
+        var days = (DateTime.Now.Date - progress.LastRehearsed!.Value.LocalDateTime.Date).Days;
+        var last = days switch { 0 => "today", 1 => "yesterday", _ => $"{days} days ago" };
+        return $"[color=#{ViewerHud.MedalColor(medal).ToHtml(false)}][b]{medal.ToString().ToUpperInvariant()}[/b][/color]   " +
+            $"Best {RehearsalScoring.FormatTime(progress.Fastest!.DurationMs)}   ·   flawless best {perfect}   ·   " +
+            $"high score {progress.BestScore:N0}   ·   combo ×{progress.BestCombo}   ·   {Plural(progress.Runs.Count, "run")}, last {last}\n";
+    }
+
+    private void ShowTrophies()
+    {
+        var unlocked = Achievements.Unlocked(_runs).ToDictionary(u => u.Achievement.Id, u => u.UnlockedAt);
+        var cells = Achievements.All.Select(a => unlocked.TryGetValue(a.Id, out var at)
+            ? $"[cell padding=0,2,20,2][color=#f1d39b][b]{a.Name}[/b][/color][/cell][cell padding=0,2,20,2]{a.Description}[/cell][cell][color=#93a7ac]{at.LocalDateTime:MMM d}[/color][/cell]"
+            : $"[cell padding=0,2,20,2][color=#5d7076]{a.Name}[/color][/cell][cell padding=0,2,20,2][color=#5d7076]{a.Description}[/color][/cell][cell][color=#5d7076]locked[/color][/cell]");
+        _details.Text = $"[b]Trophies[/b]   {unlocked.Count} of {Achievements.All.Count} unlocked\n[table=3]{string.Concat(cells)}[/table]";
+    }
+
 
     private void LoadSelected()
     {

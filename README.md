@@ -31,6 +31,7 @@ demonstrates warnings for Positions 27–29.
 | Left-click the Room | Capture the mouse and resume walking; also toggle the Locus under the crosshair |
 | M | Open or close the Palace menu |
 | R | Start or stop a rehearsal (see below) |
+| V | Sound effects on or off |
 | Alt+F4 | Close the viewer |
 
 ## Rehearse a Room
@@ -43,11 +44,48 @@ no misses. Markers turn teal (known) or coral (missed) as you go. J, L and the m
 text toggles are disabled during a rehearsal so nothing is revealed early. Walking or
 looking cancels the glide.
 
-When the Room is clear, the panel shows your first-pass score and misses. **Space**
-starts again; **R** ends the rehearsal. Each completed rehearsal is appended as one JSON
-line to `rehearsals.jsonl` in the viewer's user folder
-(`%APPDATA%\Godot\app_userdata\Palace Room Viewer\`), recording the Room, times,
-misses by round, and the first-pass missed Locus IDs. `palace.db` is never written.
+When the Room is clear, the result card shows your medal, time, and misses. **Space**
+starts again; **R** ends the rehearsal; **M** opens the Palace menu.
+
+### Beat your time
+
+Every rehearsal is a timed run. The clock starts when you press **R** and stops when
+the Room is clear; it pauses while the Palace menu is open.
+
+- **Ghost splits**: after each first-pass answer, the panel shows how far ahead of
+  (`−1.3 s`, teal) or behind (`+0.8 s`, coral) your fastest run on that Room you are.
+- **Score**: each first-pass recall earns 100 points, +10 per combo step (up to +100),
+  and up to +100 for answering within 10 seconds. Recalls in later rounds earn 25.
+  A flawless first pass adds 50 per Locus.
+- **Combo**: consecutive first-pass recalls. A miss resets it. Chimes rise in pitch as
+  the combo grows.
+- **Medals**: **Platinum** is flawless at 4 s or less per Locus; **Gold** is flawless at
+  6 s or less; **Silver** is at least 80% on the first pass; **Bronze** is any clear.
+- **Personal bests**: fastest clear, fastest flawless clear, high score, and best combo
+  per Room. A new best time, high score, Gold-or-better medal, or trophy sets off confetti.
+- **Daily streak**: consecutive days with at least one rehearsal. It survives until the
+  end of the day after your last rehearsal.
+- **Trophies**: 19 achievements, from *First Steps* to *Platinum Mind*, *Unstoppable*
+  (×20 combo), *Comeback*, *Marathon*, and *Week Walker*. The **Trophies** button in the
+  Palace menu lists them.
+
+The Palace menu shows your streak, rehearsal count, and trophies; each Room's best
+time and best medal; each Palace's count of Gold-or-better Rooms; and the selected
+Room's personal bests.
+
+### Rehearsal history in palace.db
+
+Each completed rehearsal adds one row to the `RehearsalRuns` table in the database it
+was loaded from. The viewer creates this table the first time you finish a rehearsal
+(`CREATE TABLE IF NOT EXISTS`). This is the viewer's only write: loading Rooms stays
+read-only, and existing tables are never changed. Rows hold the Room, start and end
+times, duration, medal, score, best combo, and JSON columns for Positions, misses by
+round, first-pass splits, and first-pass missed Locus IDs. If saving fails, for example
+because the database is locked, the result card says so and the run is not recorded.
+
+```sql
+SELECT RoomId, MIN(DurationMs) AS BestMs, COUNT(*) AS Runs FROM RehearsalRuns GROUP BY RoomId;
+```
 
 ## Palace menu
 
@@ -105,7 +143,7 @@ Apply the schema migration once using the separate maintenance command:
 The first command previews missing columns. The second creates a SQLite backup
 beside the database, then adds missing columns in one transaction. Repeating it is
 safe. Existing Room and Locus data and the older `RoomImage` field are preserved.
-The viewer itself stays read-only and also supports databases without these columns.
+The viewer never migrates Rooms or Loci and also supports databases without these columns.
 
 For example, place six images in `C:\tools\Data\images\room8\`, then set the paths
 using your database editor:

@@ -1,12 +1,12 @@
-using System.Text.Json;
-
 namespace PalaceRoomViewer.Core;
 
 // Walks a Room's Positions in order: reveal, then grade. Each later round re-asks only the
 // previous round's misses, still in Position order, until a round has no misses.
+// Elapsed time is supplied by the caller so the session stays deterministic.
 public sealed class RehearsalSession
 {
     private readonly List<List<int>> _missesByRound = [[]];
+    private readonly List<long> _splits = [];
     private List<int> _round;
     private int _index;
 
@@ -27,6 +27,14 @@ public sealed class RehearsalSession
     public IReadOnlyList<IReadOnlyList<int>> MissesByRound => _missesByRound;
     public IReadOnlyList<int> RoundMisses => _missesByRound[^1];
     public IReadOnlyList<int> FirstPassMisses => _missesByRound[0];
+    // Elapsed milliseconds at each first-pass answer, aligned with Positions.
+    public IReadOnlyList<long> FirstPassSplitsMs => _splits;
+    public long ElapsedMs { get; private set; }
+    public int Combo { get; private set; }
+    public int BestCombo { get; private set; }
+    public int Score { get; private set; }
+    public int LastPoints { get; private set; }
+    public int PerfectBonus { get; private set; }
 
     public bool Reveal()
     {
@@ -36,12 +44,33 @@ public sealed class RehearsalSession
     }
 
     // Grading is ignored until the text has been revealed.
-    public bool Grade(bool knew)
+    public bool Grade(bool knew, long elapsedMs = 0)
     {
         if (IsComplete || !Revealed) return false;
         Revealed = false;
+        ElapsedMs = Math.Max(ElapsedMs, elapsedMs);
+        LastPoints = 0;
+        if (Round == 1)
+        {
+            var locusMs = ElapsedMs - (_splits.Count > 0 ? _splits[^1] : 0);
+            _splits.Add(ElapsedMs);
+            Combo = knew ? Combo + 1 : 0;
+            BestCombo = Math.Max(BestCombo, Combo);
+            if (knew) LastPoints = RehearsalScoring.FirstPassPoints(Combo, locusMs);
+        }
+        else if (knew) LastPoints = RehearsalScoring.RetryPoints;
+        Score += LastPoints;
         if (!knew) _missesByRound[^1].Add(_round[_index]);
-        if (++_index < _round.Count || _missesByRound[^1].Count == 0) return true;
+        if (++_index < _round.Count) return true;
+        if (_missesByRound[^1].Count == 0)
+        {
+            if (FirstPassMisses.Count == 0)
+            {
+                PerfectBonus = RehearsalScoring.PerfectBonusPerLocus * Positions.Count;
+                Score += PerfectBonus;
+            }
+            return true;
+        }
         _round = [.. _missesByRound[^1]];
         _index = 0;
         _missesByRound.Add([]);
@@ -49,26 +78,31 @@ public sealed class RehearsalSession
     }
 }
 
-public sealed record RehearsalRecord(long RoomId, string RoomTitle, DateTimeOffset StartedAt, DateTimeOffset CompletedAt,
-    IReadOnlyList<int> Positions, IReadOnlyList<IReadOnlyList<int>> MissesByRound, IReadOnlyList<long> FirstPassMissedLocusIds)
-{
-    public static RehearsalRecord From(RehearsalSession session, RoomSnapshot room, DateTimeOffset startedAt, DateTimeOffset completedAt) =>
-        new(room.Id, room.Title, startedAt, completedAt, session.Positions,
-            session.MissesByRound.Select(r => (IReadOnlyList<int>)r.ToArray()).ToArray(),
-            session.FirstPassMisses.Select(p => room.Loci[p].Id).ToArray());
-}
+public enum Medal { None, Bronze, Silver, Gold, Platinum }
 
-// One JSON object per line, appended per completed rehearsal. Never stored in palace.db.
-public static class RehearsalLog
+public static class RehearsalScoring
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    public const int RetryPoints = 25;
+    public const int PerfectBonusPerLocus = 50;
+    public const long PlatinumPaceMs = 4_000;
+    public const long GoldPaceMs = 6_000;
+    public const double SilverFirstPass = .8;
 
-    public static void Append(string path, RehearsalRecord record)
+    // 100 per first-pass recall, +10 per combo step (up to +100), and up to +100 for answering within 10 s.
+    public static int FirstPassPoints(int combo, long locusMs) =>
+        100 + Math.Min(100, 10 * (combo - 1)) + (int)Math.Max(0, (10_000 - locusMs) / 100);
+
+    // Platinum and Gold need a flawless first pass at pace; Silver needs 80% on the first pass.
+    public static Medal MedalFor(int loci, int firstPassKnown, long durationMs)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        File.AppendAllText(path, JsonSerializer.Serialize(record, Json) + "\n");
+        if (loci <= 0) return Medal.None;
+        var pace = durationMs / (double)loci;
+        if (firstPassKnown == loci && pace <= PlatinumPaceMs) return Medal.Platinum;
+        if (firstPassKnown == loci && pace <= GoldPaceMs) return Medal.Gold;
+        return firstPassKnown >= loci * SilverFirstPass ? Medal.Silver : Medal.Bronze;
     }
 
-    public static IReadOnlyList<RehearsalRecord> Read(string path) => !File.Exists(path) ? []
-        : File.ReadLines(path).Where(l => l.Trim().Length > 0).Select(l => JsonSerializer.Deserialize<RehearsalRecord>(l, Json)!).ToList();
+    public static string FormatTime(long ms) => $"{ms / 60_000:00}:{ms / 1000 % 60:00}.{ms / 100 % 10}";
+
+    public static string FormatDelta(long ms) => (ms < 0 ? "−" : "+") + $"{Math.Abs(ms) / 1000.0:0.0} s";
 }

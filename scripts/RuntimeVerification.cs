@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Godot;
+using Microsoft.Data.Sqlite;
 using PalaceRoomViewer.Core;
 
 namespace PalaceRoomViewer;
@@ -175,9 +176,23 @@ public static class RuntimeVerification
                 }
                 if (populated.Length > 0)
                 {
+                    // Rehearsal history goes to a copy: verification never writes the database under test.
+                    var progressDatabase = Path.Combine(outputDirectory, "progress.db");
+                    using (var source = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = Path.GetFullPath(viewer.DatabasePath), Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString()))
+                    using (var copy = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = progressDatabase, Pooling = false }.ToString()))
+                    {
+                        source.Open();
+                        copy.Open();
+                        source.BackupDatabase(copy);
+                    }
+                    viewer.ProgressDatabasePath = progressDatabase;
+                    var store = new RehearsalStore();
+                    var earlierRuns = store.Load(progressDatabase).Count;
                     var markerColors = viewer.Displays.Select(d => d.Marker.Modulate).ToArray();
                     viewer.GuideSeconds = 0;
                     Keypress(Key.R);
+                    await Frame(3);
+                    Check(viewer.Hud.RehearsalText.Contains("TIME") && viewer.Hud.RehearsalText.Contains("SCORE"), "Rehearsal shows a live timer and score");
                     var session = viewer.Rehearsal;
                     Check(session is not null && session.Current == populated[0].PositionNumber, "R starts rehearsal at the first populated Position");
                     Check(!viewer.TextVisible && !viewer.Hud.ReadingVisible && viewer.Hud.RehearsalVisible, "Rehearsal hides text until revealed");
@@ -206,9 +221,33 @@ public static class RuntimeVerification
                         Keypress(Key.Key2);
                     }
                     Check(session.IsComplete && session.FirstPassMisses.SequenceEqual(misses) && viewer.Hud.RehearsalText.Contains("R O O M   C L E A R"), "A clean round clears the Room");
+                    var outcome = viewer.LastOutcome;
+                    Check(outcome is { SaveError: null } && viewer.Hud.RehearsalText.Contains(outcome.Run.Medal.ToString().ToUpperInvariant()) && viewer.Hud.RehearsalText.Contains("Score"), "Result shows medal, time and score");
                     await Capture("rehearsal-complete");
-                    var log = RehearsalLog.Read(viewer.RehearsalLogPath);
-                    Check(log.Count == 1 && log[0].RoomId == viewer.Room.Id && log[0].MissesByRound[0].SequenceEqual(misses) && log[0].FirstPassMissedLocusIds.Count == misses.Count, "Completed rehearsal is logged outside the database");
+                    var runs = store.Load(progressDatabase);
+                    Check(runs.Count == earlierRuns + 1 && runs[^1].RoomId == viewer.Room.Id && runs[^1].MissesByRound[0].SequenceEqual(misses) &&
+                        runs[^1].FirstPassMissedLocusIds.Count == misses.Count && runs[^1].SplitsMs.Count == populated.Length, "Completed rehearsal is saved to RehearsalRuns");
+                    if (earlierRuns == 0)
+                        Check(outcome!.FirstClear && outcome.Unlocked.Any(a => a.Id == "first-steps") && viewer.Hud.RehearsalText.Contains("UNLOCKED"), "First clear unlocks First Steps");
+                    Keypress(Key.Space);
+                    Check(viewer.Rehearsal is { Round: 1, IndexInRound: 0 } && viewer.LastOutcome is null, "Space starts another rehearsal");
+                    session = viewer.Rehearsal;
+                    while (session!.Current is not null)
+                    {
+                        Keypress(Key.Space);
+                        Keypress(Key.Key2);
+                        if (populated.Length > 1 && session.IndexInRound == 1)
+                            Check(viewer.Hud.RehearsalText.Contains("vs best"), "Ghost split compares with the best run");
+                    }
+                    Check(viewer.LastOutcome is { Run.Perfect: true, SaveError: null } && viewer.Hud.RehearsalText.Contains("flawless"), "Flawless second run");
+                    if (earlierRuns == 0) Check(viewer.LastOutcome!.Unlocked.Any(a => a.Id == "flawless"), "Flawless unlocks its trophy");
+                    Check(store.Load(progressDatabase).Count == earlierRuns + 2, "Every completed rehearsal is saved");
+                    Keypress(Key.M);
+                    Check(viewer.Menu.IsOpen && viewer.Menu.Runs.Count == earlierRuns + 2 && viewer.Menu.StatsText.Contains("streak"), "Palace menu shows rehearsal stats");
+                    Check(viewer.Menu.DetailsText.Contains("high score") && viewer.Menu.DetailsText.Contains("Best "), "Palace menu shows the Room's personal bests");
+                    await Capture("menu-progress");
+                    Keypress(Key.M);
+                    Check(!viewer.Menu.IsOpen && viewer.Rehearsal is not null, "Closing the menu returns to the result");
                     Keypress(Key.R);
                     Check(viewer.Rehearsal is null && !viewer.TextVisible && !viewer.Hud.RehearsalVisible && !player.Guiding, "R ends rehearsal and hides text");
                     Check(viewer.Displays.Select(d => d.Marker.Modulate).SequenceEqual(markerColors), "Ending rehearsal restores marker colors");

@@ -15,10 +15,19 @@ public partial class RoomViewer : Node3D
     public bool TextVisible => Displays.Any(d => d.Billboard.Visible);
     public bool MarkersVisible { get; private set; } = true;
     public RehearsalSession? Rehearsal { get; private set; }
-    public string RehearsalLogPath { get; private set; } = "";
+    public RehearsalOutcome? LastOutcome { get; private set; }
+    // Where rehearsal history is read and saved. Verification points this at a copy.
+    public string ProgressDatabasePath { get; set; } = ViewerOptions.DefaultDatabasePath;
     // Seconds the camera takes to glide to each rehearsal Position; 0 snaps.
     public float GuideSeconds { get; set; } = .7f;
     private DateTimeOffset _rehearsalStarted;
+    private double _rehearsalSeconds;
+    private IReadOnlyList<RehearsalRun> _history = [];
+    // The Room's fastest run; its splits are the ghost to beat.
+    private RehearsalRun? _ghost;
+    private string _feedback = "";
+    private RehearsalSounds _sounds = null!;
+    private long RehearsalMs => (long)(_rehearsalSeconds * 1000);
     private bool _loaded;
     private bool _verificationActive;
     // A Room chosen in the menu survives the scene reload that displays it.
@@ -28,9 +37,6 @@ public partial class RoomViewer : Node3D
     {
         _verificationActive = !string.IsNullOrWhiteSpace(OS.GetEnvironment("PALACE_VIEWER_SMOKE_DIR"));
         if (_verificationActive) GetWindow().Unfocusable = true;
-        RehearsalLogPath = _verificationActive
-            ? Path.Combine(OS.GetEnvironment("PALACE_VIEWER_SMOKE_DIR"), "rehearsals.jsonl")
-            : ProjectSettings.GlobalizePath("user://rehearsals.jsonl");
         RegisterInput();
         RoomGeometry.Build(this);
         Player = new WalkingCamera { Name = "Walker" };
@@ -42,13 +48,15 @@ public partial class RoomViewer : Node3D
         Menu.RoomChosen += LoadRoom;
         Menu.CloseRequested += CloseMenu;
         Hud.ChooseRoomRequested += OpenMenu;
+        _sounds = new RehearsalSounds { Name = "Sounds" };
+        AddChild(_sounds);
         var pending = s_pendingSelection;
         s_pendingSelection = null;
         ViewerOptions? options = null;
         try
         {
             options = pending ?? ViewerOptions.Parse(OS.GetCmdlineUserArgs(), requireRoom: false);
-            DatabasePath = options.DatabasePath;
+            DatabasePath = ProgressDatabasePath = options.DatabasePath;
             if (options.HasRoom)
             {
                 Room = new RoomRepository().Load(options);
@@ -124,6 +132,12 @@ public partial class RoomViewer : Node3D
                 OpenMenu();
                 GetViewport().SetInputAsHandled();
             }
+            else if (key.PhysicalKeycode == Key.V || key.Keycode == Key.V)
+            {
+                RehearsalSounds.Enabled = !RehearsalSounds.Enabled;
+                _feedback = $"[color=#93a7ac]Sound {(RehearsalSounds.Enabled ? "on" : "off")}[/color]";
+                GetViewport().SetInputAsHandled();
+            }
             else if (key.PhysicalKeycode == Key.Escape || key.Keycode == Key.Escape)
             {
                 Input.MouseMode = Input.MouseModeEnum.Visible;
@@ -166,7 +180,7 @@ public partial class RoomViewer : Node3D
         Player.Enabled = false;
         Input.MouseMode = Input.MouseModeEnum.Visible;
         Hud.SetErrorVisible(false);
-        Menu.Open(DatabasePath, Room?.Id, canClose: _loaded || Hud.HasError);
+        Menu.Open(DatabasePath, Room?.Id, canClose: _loaded || Hud.HasError, ProgressDatabasePath);
     }
 
     public void CloseMenu()
@@ -208,7 +222,17 @@ public partial class RoomViewer : Node3D
     public void StartRehearsal()
     {
         Rehearsal = new RehearsalSession(Room!.Loci.Keys);
+        LastOutcome = null;
         _rehearsalStarted = DateTimeOffset.Now;
+        _rehearsalSeconds = 0;
+        _feedback = "";
+        try { _history = new RehearsalStore().Load(ProgressDatabasePath); }
+        catch (ViewerException ex)
+        {
+            _history = [];
+            GD.PrintErr(ex.Message);
+        }
+        _ghost = new RoomProgress(Room.Id, _history.Where(r => r.RoomId == Room.Id).ToArray()).Fastest;
         foreach (var display in Displays)
         {
             display.Billboard.Visible = false;
@@ -235,31 +259,48 @@ public partial class RoomViewer : Node3D
         if (!Rehearsal!.Reveal()) return;
         RehearsalDisplay!.Billboard.Visible = true;
         Hud.ShowReading(RehearsalDisplay);
-        Hud.ShowRehearsal(Rehearsal);
+        _sounds.Play(RehearsalSound.Reveal);
+        Hud.ShowRehearsal(Rehearsal, RehearsalMs, _ghost, _feedback);
     }
 
     private void GradeRehearsal(bool knew)
     {
         var display = RehearsalDisplay;
-        if (display is null || !Rehearsal!.Grade(knew)) return;
+        var firstPass = Rehearsal!.Round == 1;
+        if (display is null || !Rehearsal.Grade(knew, RehearsalMs)) return;
         display.Billboard.Visible = false;
         display.SetCue(knew ? MarkerCue.Known : MarkerCue.Missed);
         Hud.ShowReading(null);
-        if (!Rehearsal.IsComplete)
+        _sounds.Play(knew ? RehearsalSound.Knew : RehearsalSound.Missed, Rehearsal.Combo);
+        _feedback = Rehearsal.LastPoints > 0 ? $"[color=#88d8c4][b]+{Rehearsal.LastPoints}[/b][/color]" : knew ? "" : "[color=#ee8a6b]miss[/color]";
+        // Ghost split: how far ahead of or behind the Room's fastest run this answer came.
+        if (firstPass && _ghost?.SplitFor(display.PositionNumber) is { } ghostMs)
         {
-            ShowRehearsalStep();
-            return;
+            var delta = Rehearsal.FirstPassSplitsMs[^1] - ghostMs;
+            _feedback += $"   [color=#{(delta <= 0 ? "88d8c4" : "ee8a6b")}]{RehearsalScoring.FormatDelta(delta)}[/color] [color=#93a7ac]vs best[/color]";
         }
-        Hud.ShowRehearsal(Rehearsal);
+        if (Rehearsal.IsComplete) FinishRehearsal();
+        else ShowRehearsalStep();
+    }
+
+    private void FinishRehearsal()
+    {
+        var run = RehearsalRun.From(Rehearsal!, Room!, _rehearsalStarted, DateTimeOffset.Now);
+        string? error = null;
         try
         {
-            RehearsalLog.Append(RehearsalLogPath, RehearsalRecord.From(Rehearsal, Room!, _rehearsalStarted, DateTimeOffset.Now));
-            GD.Print($"Rehearsal logged: {RehearsalLogPath}");
+            run = new RehearsalStore().Save(ProgressDatabasePath, run);
+            GD.Print($"Rehearsal saved: Room {run.RoomId}, {RehearsalScoring.FormatTime(run.DurationMs)}, {run.Medal}, score {run.Score}.");
         }
-        catch (Exception ex)
+        catch (ViewerException ex)
         {
-            GD.PrintErr($"Could not write the rehearsal log {RehearsalLogPath}: {ex.Message}");
+            error = ex.Message.Replace('\n', ' ');
+            GD.PrintErr(ex.Message);
         }
+        LastOutcome = RehearsalOutcome.Create(_history, run, DateOnly.FromDateTime(DateTime.Now), error);
+        Hud.ShowRehearsalResult(LastOutcome);
+        _sounds.Play(LastOutcome.Celebrate ? RehearsalSound.Record : RehearsalSound.Clear);
+        if (LastOutcome.Celebrate) Hud.Celebrate();
     }
 
     private void ShowRehearsalStep()
@@ -267,7 +308,7 @@ public partial class RoomViewer : Node3D
         var display = RehearsalDisplay!;
         display.SetCue(MarkerCue.Target);
         Player.Guide(display.Viewpoint, display.GlobalPosition, GuideSeconds);
-        Hud.ShowRehearsal(Rehearsal!);
+        Hud.ShowRehearsal(Rehearsal!, RehearsalMs, _ghost, _feedback);
     }
 
     public void ToggleText()
@@ -319,6 +360,12 @@ public partial class RoomViewer : Node3D
         Hud.Map.PlayerForward = -Player.Camera.GlobalBasis.Z;
         Hud.Map.QueueRedraw();
         if (captured && Rehearsal is null) UpdateReading(focus);
+        // The clock pauses while the Palace menu is open.
+        if (Rehearsal is { IsComplete: false } && !Menu.IsOpen)
+        {
+            _rehearsalSeconds += delta;
+            Hud.ShowRehearsal(Rehearsal, RehearsalMs, _ghost, _feedback);
+        }
     }
 
     private static void RegisterInput()

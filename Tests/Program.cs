@@ -255,20 +255,109 @@ Test("Rehearsal needs a populated Room", () =>
     try { _ = new RehearsalSession([]); } catch (ArgumentException) { return; }
     throw new Exception("empty rehearsal allowed");
 });
-Test("Rehearsal log appends records outside the database", () =>
+Test("Rehearsal tracks splits, combo and score", () =>
 {
+    var session = new RehearsalSession([1, 2, 3]);
+    void Answer(bool knew, long ms) { session.Reveal(); session.Grade(knew, ms); }
+    Answer(true, 2_000);
+    Check(session.Combo == 1 && session.LastPoints == 100 + 0 + 80, "first recall: base plus speed bonus");
+    Answer(true, 3_000);
+    Check(session.Combo == 2 && session.LastPoints == 100 + 10 + 90, "combo bonus grows");
+    Answer(false, 15_000);
+    Check(session.Combo == 0 && session.BestCombo == 2 && session.LastPoints == 0, "miss breaks the combo");
+    Check(session.FirstPassSplitsMs.SequenceEqual([2_000L, 3_000L, 15_000L]), "first-pass splits");
+    Answer(true, 17_000);
+    Check(session.IsComplete && session.LastPoints == RehearsalScoring.RetryPoints && session.ElapsedMs == 17_000, "retry points and time");
+    Check(session.Score == 180 + 200 + 25 && session.PerfectBonus == 0, "total without perfect bonus");
+    var perfect = new RehearsalSession([4]);
+    perfect.Reveal(); perfect.Grade(true, 20_000);
+    Check(perfect.Score == 100 + RehearsalScoring.PerfectBonusPerLocus && perfect.PerfectBonus == 50, "slow answers still earn base and perfect bonus");
+});
+Test("Medals reward accuracy and pace", () =>
+{
+    Check(RehearsalScoring.MedalFor(26, 26, 26 * 4_000) == Medal.Platinum, "platinum");
+    Check(RehearsalScoring.MedalFor(26, 26, 26 * 6_000) == Medal.Gold, "gold");
+    Check(RehearsalScoring.MedalFor(26, 26, 26 * 9_000) == Medal.Silver, "slow perfect is silver");
+    Check(RehearsalScoring.MedalFor(10, 8, 1_000) == Medal.Silver && RehearsalScoring.MedalFor(10, 7, 1_000) == Medal.Bronze, "silver needs 80%");
+    Check(RehearsalScoring.FormatTime(83_456) == "01:23.4" && RehearsalScoring.FormatDelta(-1_250) == "−1.3 s" && RehearsalScoring.FormatDelta(800) == "+0.8 s", "formatting");
+});
+DateTimeOffset At(int day, int hour = 12) => new(new DateTime(2026, 9, day, hour, 0, 0, DateTimeKind.Local));
+RehearsalRun Run(long room, int day, long ms, int[] misses, int hour = 12, int loci = 3, int combo = 0, int score = 0) =>
+    new(room, At(day, hour).AddMilliseconds(-ms), At(day, hour), ms, Enumerable.Range(1, loci).ToArray(),
+        misses.Length == 0 ? [Array.Empty<int>()] : [misses, Array.Empty<int>()],
+        Enumerable.Range(1, loci).Select(i => (long)i * 1000).ToArray(), misses.Select(p => (long)p).ToArray(), combo, score);
+Test("Room progress reports personal bests", () =>
+{
+    var progress = RoomProgress.ByRoom([Run(8, 1, 30_000, [2]), Run(8, 2, 20_000, [1, 3]), Run(8, 3, 25_000, []), Run(9, 3, 5_000, [])]);
+    var room = progress[8];
+    Check(room.Fastest!.DurationMs == 20_000 && room.FastestPerfect!.DurationMs == 25_000, "fastest and fastest perfect");
+    Check(room.BestFirstPass!.DurationMs == 25_000 && room.LastRehearsed == At(3), "best accuracy and last rehearsed");
+    Check(room.Fastest.SplitFor(2) == 2_000 && room.Fastest.SplitFor(9) is null, "splits by Position");
+    Check(progress[9].BestMedal == Medal.Platinum && !progress.ContainsKey(7), "per-room grouping");
+});
+Test("Daily streak counts consecutive days", () =>
+{
+    var today = new DateOnly(2026, 9, 28);
+    Check(RehearsalStreak.Days([today, today.AddDays(-1), today.AddDays(-2), today.AddDays(-4)], today) == 3, "three days");
+    Check(RehearsalStreak.Days([today.AddDays(-1), today.AddDays(-2)], today) == 2, "yesterday keeps the streak");
+    Check(RehearsalStreak.Days([today.AddDays(-2)], today) == 0, "broken streak");
+});
+Test("Achievements unlock from run history", () =>
+{
+    var first = Run(8, 1, 60_000, [1, 2, 3], hour: 2);
+    Check(Achievements.NewlyUnlocked([], first).Select(a => a.Id).SequenceEqual(["first-steps", "night-owl"]), "first run");
+    var faster = Run(8, 2, 9_000, [], combo: 12, score: 5_200);
+    var unlocked = Achievements.NewlyUnlocked([first], faster).Select(a => a.Id).ToArray();
+    Check(unlocked.SequenceEqual(["flawless", "silver", "gold", "platinum", "combo-10", "personal-best", "high-score"]), string.Join(",", unlocked));
+    var third = Run(9, 3, 50_000, [1, 2, 3, 4, 5], loci: 10);
+    unlocked = Achievements.NewlyUnlocked([first, faster], third).Select(a => a.Id).ToArray();
+    Check(unlocked.SequenceEqual(["comeback", "streak-3"]), string.Join(",", unlocked));
+    Check(Achievements.Unlocked([first, faster, third]).Single(u => u.Achievement.Id == "flawless").UnlockedAt == At(2), "unlock time is the earning run");
+});
+Test("Outcome compares a run with the Room's history", () =>
+{
+    var first = RehearsalOutcome.Create([], Run(8, 1, 60_000, [1], score: 300), new DateOnly(2026, 9, 1));
+    Check(first.FirstClear && !first.NewBestTime && !first.NewHighScore && first.NewBestMedal && first.StreakDays == 1 && first.Celebrate, "first clear");
+    var history = new[] { Run(8, 1, 60_000, [1], score: 300), Run(9, 2, 1_000, [], score: 900) };
+    var faster = RehearsalOutcome.Create(history, Run(8, 2, 50_000, [2], score: 250), new DateOnly(2026, 9, 2));
+    Check(faster.NewBestTime && faster.PreviousBestMs == 60_000 && !faster.NewHighScore && faster.StreakDays == 2, "beats only this Room's time");
+    var slower = RehearsalOutcome.Create(history, Run(8, 5, 70_000, [1], score: 100), new DateOnly(2026, 9, 5));
+    Check(!slower.NewBestTime && !slower.NewBestMedal && !slower.Celebrate, "no celebration for a slower run");
+});
+Test("Rehearsal store creates its table on first save only", () =>
+{
+    var database = Path.Combine(directory, "rehearsal.db");
+    File.Copy(fixture, database);
+    var store = new RehearsalStore();
+    var before = SHA256.HashData(File.ReadAllBytes(database));
+    Check(store.Load(database).Count == 0 && before.SequenceEqual(SHA256.HashData(File.ReadAllBytes(database))), "load without table changes nothing");
     var session = new RehearsalSession(Load(20).Loci.Keys);
-    foreach (var knew in new[] { false, true, true, true }) { session.Reveal(); session.Grade(knew); }
-    var log = Path.Combine(directory, "logs", "rehearsals.jsonl");
-    var started = DateTimeOffset.Parse("2026-09-28T10:00:00-04:00");
-    RehearsalLog.Append(log, RehearsalRecord.From(session, Load(20), started, started.AddMinutes(3)));
-    RehearsalLog.Append(log, RehearsalRecord.From(session, Load(20), started, started.AddMinutes(4)));
-    var records = RehearsalLog.Read(log);
-    Check(records.Count == 2 && File.ReadAllLines(log).Length == 2 && File.ReadAllText(log).Contains("\"firstPassMissedLocusIds\":[2001]"), "two camelCase lines");
-    var record = records[0];
-    Check(record.RoomId == 20 && record.StartedAt == started && record.Positions.SequenceEqual([1, 10, 26]), "room and time");
-    Check(record.MissesByRound.Count == 2 && record.MissesByRound[0].SequenceEqual([1]) && record.MissesByRound[1].Count == 0, "misses by round");
-    Check(RehearsalLog.Read(Path.Combine(directory, "absent.jsonl")).Count == 0, "missing log reads empty");
+    foreach (var (knew, ms) in new[] { (false, 1_000L), (true, 2_500L), (true, 4_000L), (true, 6_000L) }) { session.Reveal(); session.Grade(knew, ms); }
+    var run = RehearsalRun.From(session, Load(20), At(28, 9), At(28, 9).AddSeconds(6));
+    var saved = store.Save(database, run);
+    var second = store.Save(database, run with { CompletedAt = At(28, 10), DurationMs = 5_000 });
+    Check(saved.Id > 0 && second.Id > saved.Id, "ids assigned");
+    var runs = store.Load(database);
+    Check(runs.Count == 2 && runs[0].Id == saved.Id && runs[0].StartedAt == At(28, 9) && runs[0].DurationMs == 6_000, "round trip");
+    Check(runs[0].Positions.SequenceEqual([1, 10, 26]) && runs[0].MissesByRound[0].SequenceEqual([1]) && runs[0].SplitsMs.SequenceEqual([1_000L, 2_500L, 4_000L]), "json columns");
+    Check(runs[0].FirstPassMissedLocusIds.SequenceEqual([2001L]) && runs[0].Score == session.Score && runs[0].BestCombo == 2, "ids, score, combo");
+    Check(repository.Load(new(8, database)).Loci.Count == 26, "Rooms and Loci still load");
+    using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database, Pooling = false }.ToString());
+    connection.Open();
+    using (var command = connection.CreateCommand())
+    {
+        command.CommandText = "SELECT Medal, FirstPassKnown, Rounds FROM RehearsalRuns WHERE Id = " + saved.Id;
+        using var reader = command.ExecuteReader();
+        Check(reader.Read() && reader.GetString(0) == run.Medal.ToString() && reader.GetInt32(1) == 2 && reader.GetInt32(2) == 2, "queryable summary columns");
+    }
+    Execute(connection, "INSERT INTO RehearsalRuns (RoomId, StartedAt, CompletedAt, DurationMs, LociCount, FirstPassKnown, Rounds, BestCombo, Score, Medal, Positions, MissesByRound, SplitsMs, FirstPassMissedLocusIds) VALUES (8, 'garbage', 'garbage', 1, 1, 1, 1, 0, 0, 'None', '[]', '[]', '[]', '[]')");
+    Check(store.Load(database).Count == 2, "malformed rows are skipped");
+});
+Test("Rehearsal store never creates a missing database", () =>
+{
+    var absent = Path.Combine(directory, "no-rehearsals.db");
+    Fails(() => new RehearsalStore().Save(absent, Run(8, 1, 1_000, [])), "does not exist");
+    Check(!File.Exists(absent), "must not create");
 });
 
 RoomImageChecks.Run(directory, Test);
