@@ -15,6 +15,8 @@ public partial class ViewerHud : CanvasLayer
     private Label _focusHint = null!;
     private Label _crosshair = null!;
     private Label _pauseHint = null!;
+    private Label _controls = null!;
+    private Label _controlsMore = null!;
     private PanelContainer _readingPanel = null!;
     private Label _readingTitle = null!;
     private RichTextLabel _readingText = null!;
@@ -29,17 +31,29 @@ public partial class ViewerHud : CanvasLayer
     private Label _rehearsalTarget = null!;
     private RichTextLabel _rehearsalLive = null!;
     private Label _rehearsalPrompt = null!;
+    private PanelContainer _drillPrompt = null!;
+    private LineEdit _drillRange = null!;
+    private Label _drillError = null!;
+    private Label _drillWeak = null!;
+    private string? _weakRange;
     private CpuParticles2D _confetti = null!;
     private long? _readingId;
     private bool _hasError;
     private bool _roomLoaded;
     public RoomMap Map { get; private set; } = null!;
     public event Action? ChooseRoomRequested;
+    public event Action<string>? DrillRangeSubmitted;
+    public event Action? DrillPromptCancelled;
+    public bool DrillPromptVisible => _drillPrompt.Visible;
+    public string DrillPromptError => _drillError.Text;
+    public string DrillPromptRange => _drillRange.Text;
+    public string DrillWeakText => _drillWeak.Text;
     public bool HasError => _hasError;
     public string ErrorText => _errorText.Text;
     public string WarningText => _warningsText.Text;
     public bool ReadingVisible => _readingPanel.Visible;
     public bool RehearsalVisible => _rehearsalPanel.Visible;
+    public string ControlsText => _controls.Text + "\n" + _controlsMore.Text;
     public string RehearsalText => string.Join("\n", _rehearsalTitle.Text, _rehearsalTarget.Text, _rehearsalLive.GetParsedText(), _rehearsalPrompt.Text);
 
     public override void _Ready()
@@ -82,8 +96,11 @@ public partial class ViewerHud : CanvasLayer
 
         var controls = Panel(24, -85, 790, -24, false, true);
         var controlsBox = Column(controls);
-        controlsBox.AddChild(Text("WASD   Walk    MOUSE   Look    J   All text    L   This text    K   Markers    R   Rehearse", 14, Ink));
-        controlsBox.AddChild(Text("LEFT CLICK   This text    RIGHT CLICK   All text    ESC   Release mouse    M   Palaces    V   Sound", 12, Muted));
+        _controls = Text("", 14, Ink);
+        controlsBox.AddChild(_controls);
+        _controlsMore = Text("", 12, Muted);
+        controlsBox.AddChild(_controlsMore);
+        RefreshKeys();
 
         _readingPanel = Panel(24, -306, 630, -103, false, true);
         _readingPanel.Visible = false;
@@ -118,6 +135,38 @@ public partial class ViewerHud : CanvasLayer
         rehearsalBox.AddChild(_rehearsalLive);
         _rehearsalPrompt = Text("", 16, new Color("f1d39b"));
         rehearsalBox.AddChild(_rehearsalPrompt);
+
+        _drillPrompt = new PanelContainer { Visible = false };
+        _drillPrompt.AddThemeStyleboxOverride("panel", Surface());
+        _root.AddChild(_drillPrompt);
+        _drillPrompt.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.CenterTop);
+        _drillPrompt.OffsetLeft = -330; _drillPrompt.OffsetRight = 330;
+        _drillPrompt.OffsetTop = 126; _drillPrompt.OffsetBottom = 126;
+        var drillBox = Column(_drillPrompt);
+        drillBox.AddChild(Text("L O O P   /   C H O O S E   P O S I T I O N S", 12, Accent));
+        _drillRange = new LineEdit { PlaceholderText = "1-3", CustomMinimumSize = new(0, 40), KeepEditingOnTextSubmit = true };
+        _drillRange.AddThemeFontSizeOverride("font_size", 20);
+        _drillRange.TextSubmitted += text => DrillRangeSubmitted?.Invoke(text);
+        _drillRange.GuiInput += @event =>
+        {
+            if (@event is not InputEventKey { Pressed: true, Echo: false } key) return;
+            if (key.Keycode == Key.Tab || key.PhysicalKeycode == Key.Tab)
+            {
+                _drillRange.AcceptEvent();
+                FillWeakSpots();
+            }
+            else if (key.Keycode == Key.Escape || key.PhysicalKeycode == Key.Escape)
+            {
+                _drillRange.AcceptEvent();
+                DrillPromptCancelled?.Invoke();
+            }
+        };
+        drillBox.AddChild(_drillRange);
+        drillBox.AddChild(Text("e.g.  1-3   or   1-3, 7, 10-12        ENTER   Start loop        ESC   Cancel", 13, Muted));
+        _drillWeak = Text("", 13, new Color("f1d39b"));
+        drillBox.AddChild(_drillWeak);
+        _drillError = Text("", 13, new Color("edbf7f"));
+        drillBox.AddChild(_drillError);
 
         _confetti = new CpuParticles2D
         {
@@ -178,6 +227,20 @@ public partial class ViewerHud : CanvasLayer
         errorButtons.AddChild(quit);
     }
 
+    // Rewrites the key hints after the bindings change.
+    public void RefreshKeys()
+    {
+        var walk = new[] { KeyAction.WalkForward, KeyAction.WalkLeft, KeyAction.WalkBack, KeyAction.WalkRight }
+            .Select(a => Keys.Current.Keys(a).Select(Keys.Name).FirstOrDefault() ?? "—").ToArray();
+        _controls.Text = $"{(walk.All(k => k.Length == 1) ? string.Concat(walk) : string.Join(" ", walk))}   Walk    MOUSE   Look    " +
+            $"{K(KeyAction.AllText)}   All text    {K(KeyAction.ThisText)}   This text    {K(KeyAction.Markers)}   Markers    " +
+            $"{K(KeyAction.Rehearse)}   Rehearse    {K(KeyAction.Loop)}   Loop";
+        _controlsMore.Text = "LEFT CLICK   This text    RIGHT CLICK   All text    ESC   Release mouse    " +
+            $"{K(KeyAction.PalaceMenu)}   Palaces    {K(KeyAction.Sound)}   Sound    {K(KeyAction.KeyBindings)}   Keys";
+    }
+
+    private static string K(KeyAction action) => Keys.Label(action);
+
     public void ShowRoom(RoomSnapshot room, IReadOnlyList<string>? textureWarnings = null)
     {
         _roomLoaded = true;
@@ -214,10 +277,10 @@ public partial class ViewerHud : CanvasLayer
     public void UpdateState(int visibleCount, int totalCount, bool markersVisible, bool captured, LocusDisplay? focus)
     {
         var textState = visibleCount == 0 ? "hidden" : visibleCount == totalCount ? "visible" : $"{visibleCount}/{totalCount}";
-        _state.Text = $"J   Text {textState}     K   Markers {(markersVisible ? "visible" : "hidden")}";
+        _state.Text = $"{K(KeyAction.AllText)}   Text {textState}     {K(KeyAction.Markers)}   Markers {(markersVisible ? "visible" : "hidden")}";
         _focusHint.Text = focus?.Locus is not null
-            ? $"L   {(focus.Billboard.Visible ? "Hide" : "Show")} text · Position {focus.PositionNumber:00}"
-            : focus is not null ? $"Position {focus.PositionNumber:00} · Empty" : "L   Aim at a Position";
+            ? $"{K(KeyAction.ThisText)}   {(focus.Billboard.Visible ? "Hide" : "Show")} text · Position {focus.PositionNumber:00}"
+            : focus is not null ? $"Position {focus.PositionNumber:00} · Empty" : $"{K(KeyAction.ThisText)}   Aim at a Position";
         _crosshair.Modulate = focus?.Locus is not null ? Accent : Colors.White;
         _pauseHint.Text = captured || HasError ? "" : _roomLoaded ? "Mouse released · Click the Room to continue" : "Press M to choose a Room";
     }
@@ -238,7 +301,7 @@ public partial class ViewerHud : CanvasLayer
             $"[color=#93a7ac]TIME[/color]  [b]{RehearsalScoring.FormatTime(elapsedMs)}[/b]      {bestText}      " +
             $"[color=#93a7ac]SCORE[/color]  {session.Score:N0}{combo}\n" +
             $"[color=#93a7ac]{session.IndexInRound + 1} of {session.RoundPositions.Count}   ·   {session.RoundMisses.Count} missed this round[/color]      {feedback}");
-        Set(_rehearsalPrompt, session.Revealed ? "1   Missed        2   Knew it        V   Sound" : "Recall it, then   SPACE   Reveal");
+        Set(_rehearsalPrompt, session.Revealed ? GradePrompt($"{K(KeyAction.Sound)}   Sound") : RevealPrompt($"{K(KeyAction.Quit)}   Quit"));
     }
 
     public void ShowRehearsalResult(RehearsalOutcome outcome)
@@ -264,10 +327,66 @@ public partial class ViewerHud : CanvasLayer
             lines.Add("[color=#f1d39b]UNLOCKED[/color]   " + string.Join("   ·   ", outcome.Unlocked.Select(a => $"[b]{a.Name}[/b]")));
         if (outcome.SaveError is { } error) lines.Add($"[color=#edbf7f]Not saved: {error.Replace("[", "[lb]")}[/color]");
         SetRich(_rehearsalLive, string.Join("\n", lines));
-        Set(_rehearsalPrompt, "SPACE   Rehearse again        R   Done        M   Palaces");
+        Set(_rehearsalPrompt, $"{K(KeyAction.Reveal)}   Rehearse again        {K(KeyAction.Quit)}   Done        {K(KeyAction.PalaceMenu)}   Palaces");
     }
 
+    private static string GradePrompt(string extra) => $"{K(KeyAction.Knew)}   Knew it        {K(KeyAction.Missed)}   Missed        {extra}";
+    private static string RevealPrompt(string extra) => $"Recall it, then   {K(KeyAction.Reveal)}   Reveal        {extra}";
+
     public void HideRehearsal() => _rehearsalPanel.Visible = false;
+
+    public void ShowDrillPrompt(string range, string error = "")
+    {
+        _rehearsalPanel.Visible = false;
+        _drillPrompt.Visible = true;
+        _drillError.Text = error;
+        _drillError.Visible = error.Length > 0;
+        if (_drillRange.Text != range) _drillRange.Text = range;
+        _drillRange.GrabFocus();
+        _drillRange.Edit();
+        _drillRange.SelectAll();
+        _drillRange.CaretColumn = range.Length;
+    }
+
+    // FSRS weak spots for the loaded Room: null when it has never been rehearsed.
+    public void SetWeakSpots(IReadOnlyList<int>? weak, string? error = null)
+    {
+        _weakRange = weak is { Count: > 0 } ? LoopDrill.Describe(weak) : null;
+        _drillWeak.Text = error is not null ? $"Weak spots unavailable: {error}"
+            : weak is null ? "Weak spots: rehearse this Room first and FSRS will find them."
+            : weak.Count == 0 ? "Weak spots: none. Every Locus is at 90% recall or better."
+            : $"Weak spots (below 90% recall): {_weakRange}        TAB   Use them";
+    }
+
+    // Puts the weak spots into the range field; Enter then starts the loop.
+    public void FillWeakSpots()
+    {
+        if (_weakRange is null) return;
+        _drillRange.Text = _weakRange;
+        _drillRange.CaretColumn = _weakRange.Length;
+    }
+
+    public void HideDrillPrompt()
+    {
+        _drillPrompt.Visible = false;
+        _drillRange.ReleaseFocus();
+    }
+
+    // Loop drill shares the rehearsal panel. feedback is BBCode for the last answer.
+    public void ShowDrill(LoopDrill drill, string feedback)
+    {
+        _rehearsalPanel.Visible = true;
+        Set(_rehearsalTitle, $"L O O P   /   P O S I T I O N S   {LoopDrill.Describe(drill.Positions)}   ·   L A P   {drill.Lap}");
+        Set(_rehearsalTarget, $"Position {drill.Current:00}   ·   {RoomLayout.Description(drill.Current)}");
+        _rehearsalTarget.AddThemeColorOverride("font_color", Ink);
+        var previous = drill.PreviousLapKnown is { } known ? $"      [color=#93a7ac]LAST LAP[/color]  {known}/{drill.Positions.Count}" : "";
+        var streak = drill.Streak >= 2 ? $"      [color=#f1d39b]STREAK ×{drill.Streak}[/color]" : "";
+        SetRich(_rehearsalLive,
+            $"[color=#93a7ac]THIS LAP[/color]  {drill.LapKnown} known · {drill.LapMissed} missed{previous}{streak}\n" +
+            $"[color=#93a7ac]{drill.IndexInLap + 1} of {drill.Positions.Count}   ·   {drill.TotalKnown} of {drill.TotalGraded} known overall[/color]      {feedback}");
+        Set(_rehearsalPrompt, drill.Revealed ? GradePrompt($"{K(KeyAction.Quit)}   Stop")
+            : RevealPrompt($"{K(KeyAction.Loop)}   New range        {K(KeyAction.Quit)}   Stop"));
+    }
 
     // Confetti burst and a warm flash of the rehearsal panel.
     public void Celebrate()

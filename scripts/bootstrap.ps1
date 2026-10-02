@@ -45,4 +45,8 @@ if (-not (Test-Path -LiteralPath (Join-Path $templateDir 'windows_release_x86_64
         }
     } finally { $archive.Dispose() }
 }
+# The FSRS review scheduler is a Rust library (Native/fsrs-ffi) that every build compiles.
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    throw 'Rust is required to build the FSRS scheduler in Native/fsrs-ffi. Install it from https://rustup.rs, then rerun.'
+}
 Write-Host "Godot $version .NET ready at $editorDir"

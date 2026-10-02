@@ -4,8 +4,22 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <FsrsCrate>$(MSBuildThisFileDirectory)../Native/fsrs-ffi/</FsrsCrate>
+    <FsrsLibrary>$(FsrsCrate)target/release/fsrs_ffi.dll</FsrsLibrary>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.31" />
   </ItemGroup>
+  <!-- The FSRS scheduler is a Rust DLL (Native/fsrs-ffi). Cargo rebuilds it only when its sources change,
+       and it is copied beside every project that references Core, including the Godot export. -->
+  <ItemGroup>
+    <FsrsSource Include="$(FsrsCrate)src/**/*.rs;$(FsrsCrate)Cargo.toml;$(FsrsCrate)Cargo.lock" />
+    <None Include="$(FsrsLibrary)" Link="fsrs_ffi.dll" Visible="false"
+          CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="BuildFsrsLibrary" BeforeTargets="BeforeBuild" Inputs="@(FsrsSource)" Outputs="$(FsrsLibrary)">
+    <Exec Command="cargo build --release --locked --manifest-path &quot;$(FsrsCrate)Cargo.toml&quot;" />
+    <Touch Files="$(FsrsLibrary)" />
+  </Target>
 </Project>

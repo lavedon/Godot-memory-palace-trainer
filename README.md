@@ -24,28 +24,34 @@ demonstrates warnings for Positions 27–29.
 | --- | --- |
 | W A S D | Walk relative to your facing direction |
 | Mouse | Look, including up at the ceiling and down at the floor |
-| J or right-click | Hide all text if any is visible; otherwise show all text |
+| J or right-click | Hide all text if any is visible; otherwise show all text. During a rehearsal or loop drill, J = knew it |
 | L or left-click | Toggle only the Locus under the crosshair, even when its text is hidden |
-| K | Toggle numbered markers (initially visible) |
+| K | Toggle numbered markers (initially visible). During a rehearsal or loop drill, K = missed |
 | Escape | Release the mouse; use scrollbars or select text |
 | Left-click the Room | Capture the mouse and resume walking; also toggle the Locus under the crosshair |
 | M | Open or close the Palace menu |
 | R | Start or stop a rehearsal (see below) |
+| / | Start a loop drill over chosen Positions (see below); T also works |
+| Q | Quit a rehearsal or loop drill |
 | V | Sound effects on or off |
+| F1 | Change key bindings (see below) |
 | Alt+F4 | Close the viewer |
+
+These are the default keys. Every key above except Escape and the mouse can be changed.
 
 ## Rehearse a Room
 
 Press **R** to walk the Room in Position order with all text hidden. The camera glides to
-each populated Position and highlights its marker. Recall the Locus, press **Space** to
-reveal it, then grade yourself: **1** = missed, **2** = knew it. When the round ends, the
-next round repeats only that round's misses, still in Position order, until a round has
-no misses. Markers turn teal (known) or coral (missed) as you go. J, L and the mouse
-text toggles are disabled during a rehearsal so nothing is revealed early. Walking or
-looking cancels the glide.
+each populated Position and highlights its marker. Recall the Locus, press **Space** (or
+**H**) to reveal it, then grade yourself: **J** = knew it, **K** = missed (**2** and **1** also
+work). When the round ends, the next round repeats only that round's misses, still in
+Position order, until a round has no misses. Markers turn teal (known) or coral (missed)
+as you go. During a rehearsal J and K grade instead of toggling text and markers, and L
+and the mouse text toggles are disabled, so nothing is revealed early. Walking or looking
+cancels the glide.
 
 When the Room is clear, the result card shows your medal, time, and misses. **Space**
-starts again; **R** ends the rehearsal; **M** opens the Palace menu.
+starts again; **Q** (or **R**) ends the rehearsal; **M** opens the Palace menu.
 
 ### Beat your time
 
@@ -78,14 +84,68 @@ Room's personal bests.
 Each completed rehearsal adds one row to the `RehearsalRuns` table in the database it
 was loaded from. The viewer creates this table the first time you finish a rehearsal
 (`CREATE TABLE IF NOT EXISTS`). This is the viewer's only write: loading Rooms stays
-read-only, and existing tables are never changed. Rows hold the Room, start and end
+read-only, and no other table is ever changed. Rows hold the Room, start and end
 times, duration, medal, score, best combo, and JSON columns for Positions, misses by
-round, first-pass splits, and first-pass missed Locus IDs. If saving fails, for example
+round, first-pass splits, first-pass missed Locus IDs, and every Locus ID in Position
+order (`LocusIds`). A `RehearsalRuns` table created by an earlier version gains the
+nullable `LocusIds` column on its next save; older rows keep `NULL` there. If saving fails, for example
 because the database is locked, the result card says so and the run is not recorded.
 
 ```sql
 SELECT RoomId, MIN(DurationMs) AS BestMs, COUNT(*) AS Runs FROM RehearsalRuns GROUP BY RoomId;
 ```
+
+## Review next (FSRS)
+
+The viewer forecasts how well you still remember each Locus using
+[FSRS](https://github.com/open-spaced-repetition/fsrs-rs), the scheduler Anki uses, and
+ranks Rooms by what you have most likely forgotten. It works only from this viewer's own
+rehearsal history and never reads or changes Anki.
+
+- **What counts:** completed rehearsals only (loop drills are never saved), only their
+  first pass (later rounds re-ask misses the same session), and only a Room's first
+  rehearsal each day. Knew it = *Good*, missed = *Again*.
+- **Palace menu:** a **Recall** column for each Room (`ok · 96%`, `3 weak · 81%`, or
+  `new`), a **Due** count per Palace, a **RECALL** line in the Room details listing its
+  weak spots, and "N Rooms due" in the stats line.
+- **Review next** button: due Rooms across all Palaces, most likely-forgotten Loci
+  first (the sum of 1 − recall over the Room's Loci). Click a Room to select it.
+- **Weak spots:** a Locus is weak when its predicted recall is below 90%, or it was
+  added after the Room's last rehearsal. In a Room, press **/** for a loop drill; the
+  prompt lists the weak spots and **Tab** fills them in.
+
+FSRS runs with its default FSRS-6 parameters. Rooms never rehearsed are listed as `new`,
+not due.
+
+## Loop drill
+
+Press **/** (or **T**) and type the Positions to drill, such as `1-3` or `1-3, 7, 10-12`, then
+**Enter** (**Esc** cancels). The camera glides to each populated Position in the range,
+in order, with the text hidden: **Space** or **H** reveals, **J** = knew it, **K** = missed. After
+the last Position it goes straight back to the first and keeps looping the same set,
+misses and all, until you press **Q**. Press **/** (or **T**) mid-drill to switch to a new range. The panel shows the lap number, this lap's
+known/missed counts, last lap's score, and your current streak. Loop drills are practice
+only: they are untimed and are not saved to `RehearsalRuns`. The last range you typed is
+offered the next time you press **/**.
+
+## Key bindings
+
+Press **F1**, or the **Keys** button in the Palace menu, to see and change every key.
+Each action has a main and an alternate key. Click a key, then press the new one;
+**Delete** or **Backspace** unbinds it and **Escape** cancels. **Reset to defaults**
+restores the original keys.
+
+Keys are grouped by where they work: *Anywhere* (walking, menus, starting a rehearsal or
+loop drill, sound), *While exploring* (text and marker toggles), and *In a rehearsal or
+loop drill* (reveal, knew it, missed, quit). One key can do one job while exploring and
+another in a quiz, which is why J toggles text normally but means "knew it" in a rehearsal.
+If you pick a key that already does something in an overlapping group, it is taken
+from that action and the menu tells you which one.
+
+Changes take effect immediately and are saved to `keybindings.cfg` in the viewer's user
+folder (`%APPDATA%\Godot\app_userdata\Palace Room Viewer\`), not in `palace.db`. Delete
+that file to go back to the defaults. Escape always releases the mouse and cancels, and
+the mouse buttons cannot be rebound.
 
 ## Palace menu
 
@@ -196,8 +256,12 @@ override leaves that surface at its default appearance.
 
 ## Develop and export
 
-Install .NET SDK **10.0.303**. The bootstrap script downloads and verifies the
-pinned Godot **4.7.2 .NET** editor and matching templates into `.tools/`.
+Install .NET SDK **10.0.303** and [Rust](https://rustup.rs) (cargo 1.85 or newer). The
+bootstrap script downloads and verifies the pinned Godot **4.7.2 .NET** editor and
+matching templates into `.tools/`. Every .NET build compiles the FSRS scheduler in
+`Native/fsrs-ffi` (a small Rust wrapper over the `fsrs` crate, pinned in `Cargo.lock`)
+and copies `fsrs_ffi.dll` beside the viewer's assemblies; cargo skips the rebuild when
+nothing changed. `cargo test --manifest-path Native/fsrs-ffi/Cargo.toml` runs its tests.
 
 ```powershell
 .\scripts\bootstrap.ps1

@@ -6,6 +6,8 @@ public sealed record RehearsalRun(long RoomId, DateTimeOffset StartedAt, DateTim
     IReadOnlyList<long> FirstPassMissedLocusIds, int BestCombo, int Score)
 {
     public long Id { get; init; }
+    // Loci.Id at each Position, aligned with Positions. Null for runs saved before this was recorded.
+    public IReadOnlyList<long>? LocusIds { get; init; }
     public int LociCount => Positions.Count;
     public int FirstPassKnown => LociCount - MissesByRound[0].Count;
     public int Rounds => MissesByRound.Count;
@@ -25,7 +27,8 @@ public sealed record RehearsalRun(long RoomId, DateTimeOffset StartedAt, DateTim
             session.MissesByRound.Select(r => (IReadOnlyList<int>)r.ToArray()).ToArray(),
             session.FirstPassSplitsMs.ToArray(),
             session.FirstPassMisses.Select(p => room.Loci[p].Id).ToArray(),
-            session.BestCombo, session.Score);
+            session.BestCombo, session.Score)
+        { LocusIds = session.Positions.Select(p => room.Loci[p].Id).ToArray() };
 }
 
 // Personal bests for one Room.

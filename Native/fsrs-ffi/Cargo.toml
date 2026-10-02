@@ -1,0 +1,16 @@
+[package]
+name = "fsrs_ffi"
+version = "0.1.0"
+edition = "2024"
+description = "C ABI over the fsrs crate for the Palace Room Viewer"
+publish = false
+
+[lib]
+# cdylib is the DLL the viewer loads; rlib lets `cargo test` exercise the same functions.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fsrs = "=6.6.2"
+
+[profile.release]
+strip = true

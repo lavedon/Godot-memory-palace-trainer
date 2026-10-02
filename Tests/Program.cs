@@ -231,6 +231,67 @@ Test("Rehearsal walks Positions in order once each", () =>
     Check(session.Reveal() && !session.Reveal() && session.Revealed, "reveal once");
     Check(session.Grade(true) && !session.Revealed && session.Current == 10, "advances and hides");
 });
+Test("Loop drill repeats the same Positions lap after lap", () =>
+{
+    var drill = new LoopDrill([3, 1, 2, 2]);
+    Check(drill.Positions.SequenceEqual([1, 2, 3]) && drill.Current == 1 && drill.Lap == 1, "ordered start");
+    Check(!drill.Grade(true) && drill.Current == 1 && drill.TotalGraded == 0, "grading before reveal is ignored");
+    Check(drill.Reveal() && !drill.Reveal(), "reveal once");
+    Check(!drill.Grade(true) && drill.Current == 2 && !drill.Revealed, "advances and hides");
+    drill.Reveal(); drill.Grade(false);
+    drill.Reveal();
+    Check(drill.Grade(true) && drill.Lap == 2 && drill.Current == 1 && drill.PreviousLapKnown == 2, "wraps to the first Position");
+    Check(drill.LapKnown == 0 && drill.LapMissed == 0 && drill.TotalKnown == 2 && drill.TotalGraded == 3, "lap counts reset, totals keep");
+    Check(drill.Streak == 1 && drill.BestStreak == 1, "a miss breaks the streak");
+    for (var i = 0; i < 6; i++) { drill.Reveal(); drill.Grade(true); }
+    Check(drill.Lap == 4 && drill.Current == 1 && drill.PreviousLapKnown == 3 && drill.BestStreak == 7, "misses are not singled out");
+});
+Test("Loop drill ranges parse and describe", () =>
+{
+    Check(LoopDrill.ParseRange("1-3").SequenceEqual([1, 2, 3]), "simple range");
+    Check(LoopDrill.ParseRange(" 10 – 12 , 7,3-1 ").SequenceEqual([1, 2, 3, 7, 10, 11, 12]), "lists, en dash, reversed");
+    Fails(() => LoopDrill.ParseRange("0-3"), "outside");
+    Fails(() => LoopDrill.ParseRange("25-27"), "outside");
+    Fails(() => LoopDrill.ParseRange("a-b"), "not a Position");
+    Fails(() => LoopDrill.ParseRange(" , "), "such as");
+    Check(LoopDrill.Describe([12, 1, 2, 3, 7, 10, 11]) == "1–3, 7, 10–12" && LoopDrill.Describe([5]) == "5", "describe");
+    try { _ = new LoopDrill([]); } catch (ArgumentException) { return; }
+    throw new Exception("empty loop drill allowed");
+});
+Test("Key binding defaults share keys only across contexts", () =>
+{
+    var keys = KeyBindings.Defaults();
+    Check(keys.Matches(KeyAction.Knew, 'J') && keys.Matches(KeyAction.AllText, 'J') && keys.Matches(KeyAction.Knew, KeyBindings.Digit2), "J grades and toggles");
+    Check(keys.Matches(KeyAction.Loop, KeyBindings.Slash) && keys.Matches(KeyAction.Loop, 'T') && !keys.Matches(KeyAction.Loop, KeyBindings.None), "loop keys");
+    foreach (var a in KeyBindings.Actions)
+        foreach (var b in KeyBindings.Actions)
+            if (a != b && KeyBindings.Clash(a.Context, b.Context))
+                Check(!keys.Keys(a.Action).Intersect(keys.Keys(b.Action)).Any(), $"{a.Name} clashes with {b.Name}");
+});
+Test("Assigning a key clears clashing bindings only", () =>
+{
+    var keys = KeyBindings.Defaults();
+    var cleared = keys.Assign(KeyAction.Knew, 0, 'Q');
+    Check(cleared.SequenceEqual([new KeySlot(KeyAction.Quit, 0)]) && keys.Get(KeyAction.Quit, 0) == KeyBindings.None && keys.Matches(KeyAction.Knew, 'Q'), "quiz clash cleared");
+    Check(keys.Assign(KeyAction.Knew, 1, 'L').Count == 0 && keys.Matches(KeyAction.ThisText, 'L'), "exploring key reused in a quiz");
+    cleared = keys.Assign(KeyAction.Sound, 0, 'L');
+    Check(cleared.Count == 2 && !keys.Matches(KeyAction.ThisText, 'L') && !keys.Matches(KeyAction.Knew, 'L'), "anywhere key clears both contexts");
+    Check(keys.Assign(KeyAction.Sound, 1, 'L').Count == 0 && keys.Get(KeyAction.Sound, 0) == KeyBindings.None && keys.Get(KeyAction.Sound, 1) == 'L', "moves between an action's own slots");
+    Fails(() => keys.Assign(KeyAction.Quit, 0, KeyBindings.Escape), "reserved");
+    keys.Clear(KeyAction.Reveal, 1);
+    Check(!keys.Matches(KeyAction.Reveal, KeyBindings.Space), "clear");
+});
+Test("Key bindings round-trip and tolerate bad lines", () =>
+{
+    var keys = KeyBindings.Defaults();
+    keys.Assign(KeyAction.WalkForward, 1, 'I');
+    keys.Clear(KeyAction.Quit, 0);
+    var text = keys.Serialize();
+    var loaded = KeyBindings.Parse(text);
+    Check(loaded.Serialize() == text && loaded.Matches(KeyAction.WalkForward, 'I') && loaded.Get(KeyAction.Quit, 0) == KeyBindings.None, "round trip");
+    var partial = KeyBindings.Parse("Knew=85,0\nBogus=1,2\nMissed=abc\nQuit=4194305,0\nSound=1\n");
+    Check(partial.Get(KeyAction.Knew, 0) == 'U' && partial.Matches(KeyAction.Missed, 'K') && partial.Matches(KeyAction.Quit, 'Q') && partial.Matches(KeyAction.Sound, 'V'), "bad lines keep defaults");
+});
 Test("Rehearsal repeats only misses until a clean round", () =>
 {
     var session = new RehearsalSession([1, 2, 3, 4]);
@@ -352,6 +413,72 @@ Test("Rehearsal store creates its table on first save only", () =>
     }
     Execute(connection, "INSERT INTO RehearsalRuns (RoomId, StartedAt, CompletedAt, DurationMs, LociCount, FirstPassKnown, Rounds, BestCombo, Score, Medal, Positions, MissesByRound, SplitsMs, FirstPassMissedLocusIds) VALUES (8, 'garbage', 'garbage', 1, 1, 1, 1, 0, 0, 'None', '[]', '[]', '[]', '[]')");
     Check(store.Load(database).Count == 2, "malformed rows are skipped");
+});
+Test("Rehearsal store adds LocusIds to an older table", () =>
+{
+    var database = Path.Combine(directory, "legacy-rehearsal.db");
+    File.Copy(fixture, database);
+    using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database, Pooling = false }.ToString()))
+    {
+        connection.Open();
+        // The schema as first released, before LocusIds.
+        Execute(connection, "CREATE TABLE RehearsalRuns (Id INTEGER PRIMARY KEY, RoomId INTEGER NOT NULL, StartedAt TEXT NOT NULL, CompletedAt TEXT NOT NULL, " +
+            "DurationMs INTEGER NOT NULL, LociCount INTEGER NOT NULL, FirstPassKnown INTEGER NOT NULL, Rounds INTEGER NOT NULL, BestCombo INTEGER NOT NULL, " +
+            "Score INTEGER NOT NULL, Medal TEXT NOT NULL, Positions TEXT NOT NULL, MissesByRound TEXT NOT NULL, SplitsMs TEXT NOT NULL, FirstPassMissedLocusIds TEXT NOT NULL)");
+        using (var columns = connection.CreateCommand())
+        {
+            columns.CommandText = "SELECT COUNT(*) FROM pragma_table_info('RehearsalRuns') WHERE name = 'LocusIds'";
+            Check((long)columns.ExecuteScalar()! == 0, "legacy table has no LocusIds column");
+        }
+        Execute(connection, "INSERT INTO RehearsalRuns (RoomId, StartedAt, CompletedAt, DurationMs, LociCount, FirstPassKnown, Rounds, BestCombo, Score, Medal, Positions, MissesByRound, SplitsMs, FirstPassMissedLocusIds) VALUES (20, '2026-09-01T12:00:00+00:00', '2026-09-01T12:00:05+00:00', 5000, 3, 3, 1, 3, 300, 'Gold', '[1,10,26]', '[[]]', '[1,2,3]', '[]')");
+    }
+    var store = new RehearsalStore();
+    Check(store.Load(database) is [{ LocusIds: null }], "legacy row loads without LocusIds");
+    var session = new RehearsalSession(Load(20).Loci.Keys);
+    while (session.Current is not null) { session.Reveal(); session.Grade(true, 1_000); }
+    store.Save(database, RehearsalRun.From(session, Load(20), At(2), At(2).AddSeconds(3)));
+    var runs = store.Load(database);
+    Check(runs.Count == 2 && runs[0].LocusIds is null && runs[1].LocusIds!.SequenceEqual([2001L, 2010L, 2026L]), "column added and filled for new runs");
+});
+Test("FSRS scheduler loads from the Rust library", () =>
+{
+    Check(Fsrs.Parameters.Count == 21 && Fsrs.Decay is > 0 and < 1, "default FSRS-6 parameters");
+    var memories = Fsrs.MemoryStates([
+        [new(FsrsReview.Good, 0)],
+        [new(FsrsReview.Good, 0), new(FsrsReview.Good, 3)],
+        [new(FsrsReview.Good, 0), new(FsrsReview.Good, 3), new(FsrsReview.Again, 10)]]);
+    Check(memories[1].Stability > memories[0].Stability && memories[2].Stability < memories[1].Stability, "success grows stability, a lapse lowers it");
+    var s = memories[1];
+    Check(Math.Abs(Fsrs.Retrievability(s, 0) - 1) < 1e-6 && Math.Abs(Fsrs.Retrievability(s, s.Stability) - .9) < 1e-3, "recall is 90% at stability");
+    Check(Fsrs.Retrievability(s, 30) < Fsrs.Retrievability(s, 10), "recall decays");
+    try { Fsrs.MemoryStates([[new(5, 0)]]); } catch (ViewerException) { return; }
+    throw new Exception("invalid rating accepted");
+});
+Test("Review planner forecasts Loci from first passes", () =>
+{
+    IReadOnlyDictionary<long, IReadOnlyDictionary<int, long>> loci = new Dictionary<long, IReadOnlyDictionary<int, long>>
+    {
+        [8] = new Dictionary<int, long> { [1] = 801, [2] = 802, [3] = 803, [4] = 804 },
+        [9] = new Dictionary<int, long> { [1] = 901, [2] = 902, [3] = 903 },
+        [10] = new Dictionary<int, long> { [1] = 1001 },
+    };
+    var runs = new[]
+    {
+        Run(8, 1, 1_000, [2]), Run(8, 1, 1_000, [], hour: 15), Run(8, 3, 1_000, [2]),
+        Run(9, 3, 1_000, []) with { LocusIds = [999, 902, 903] },
+        Run(42, 3, 1_000, []), Run(9, 9, 1_000, [1, 2, 3]),
+    };
+    var forecast = ReviewPlanner.Forecast(runs, loci, new DateOnly(2026, 9, 4));
+    var room8 = forecast[8];
+    Check(room8.LastRehearsed == new DateOnly(2026, 9, 3) && room8.Tested.Count == 3 && room8.UntestedPositions.SequenceEqual([4]), "Locus 4 never tested");
+    Check(room8.Tested.Single(l => l.Position == 2).Reviews == 2 && room8.Tested.Single(l => l.Position == 1).Reviews == 2, "one rehearsal per Room per day");
+    Check(room8.Tested.Single(l => l.Position == 2).Recall < room8.Tested.Single(l => l.Position == 1).Recall, "misses lower recall");
+    Check(room8.WeakPositions.SequenceEqual([2, 4]) && room8.Due, "weak spots");
+    Check(forecast[9].UntestedPositions.SequenceEqual([1]) && forecast[9].Tested.Count == 2, "recorded Locus Ids beat today's Positions; future runs are ignored");
+    Check(!forecast[10].Rehearsed && !forecast[10].Due && !forecast.ContainsKey(42), "new Rooms and unknown Rooms");
+    var ranked = ReviewPlanner.Ranked(forecast.Values);
+    Check(ranked.Select(f => f.RoomId).SequenceEqual([8, 9]) && ranked[0].ExpectedForgotten > ranked[1].ExpectedForgotten, "ranked by likely-forgotten Loci");
+    Check(ReviewPlanner.Ranked(ReviewPlanner.Forecast([], loci, new DateOnly(2026, 9, 4)).Values).Count == 0, "nothing rehearsed, nothing due");
 });
 Test("Rehearsal store never creates a missing database", () =>
 {

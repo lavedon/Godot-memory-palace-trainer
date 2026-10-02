@@ -5,7 +5,7 @@ namespace PalaceRoomViewer;
 
 // Palace → Room picker. Lists every Room with its Loci count and whether its six
 // surface images are set in palace.db and present on disk, plus rehearsal bests,
-// the daily streak, and trophies. Opened with M.
+// the daily streak, trophies, and FSRS review forecasts ("Review next"). Opened with M.
 public partial class PalaceMenu : CanvasLayer
 {
     private static readonly Color Found = new("88d8c4");
@@ -22,12 +22,18 @@ public partial class PalaceMenu : CanvasLayer
     private Label _stats = null!;
     private Button _trophies = null!;
     private bool _showingTrophies;
+    private Button _reviewNext = null!;
+    private bool _showingReviewNext;
+    private IReadOnlyDictionary<long, RoomForecast> _forecasts = new Dictionary<long, RoomForecast>();
+    private string? _forecastError;
+    private DateOnly _today;
     private IReadOnlyList<RehearsalRun> _runs = [];
     private IReadOnlyDictionary<long, RoomProgress> _progress = new Dictionary<long, RoomProgress>();
     private IReadOnlyList<PalaceSummary> _catalog = [];
     private long? _currentRoomId;
     public event Action<long>? RoomChosen;
     public event Action? CloseRequested;
+    public event Action? KeyBindingsRequested;
     public bool IsOpen => _root.Visible;
     // False when there is nothing to return to (no Room loaded and no error to show).
     public bool CanClose => !_close.Disabled;
@@ -35,6 +41,7 @@ public partial class PalaceMenu : CanvasLayer
     public IReadOnlyList<RehearsalRun> Runs => _runs;
     public string DetailsText => _details.GetParsedText();
     public string StatsText => _stats.Text;
+    public IReadOnlyDictionary<long, RoomForecast> Forecasts => _forecasts;
 
     public override void _Ready()
     {
@@ -70,7 +77,7 @@ public partial class PalaceMenu : CanvasLayer
         palaceColumn.AddChild(ViewerHud.Text("PALACES", 12, ViewerHud.Muted));
         _palaces = new Tree
         {
-            Columns = 3, HideRoot = true, ColumnTitlesVisible = true,
+            Columns = 4, HideRoot = true, ColumnTitlesVisible = true,
             SelectMode = Tree.SelectModeEnum.Row, SizeFlagsVertical = Control.SizeFlags.ExpandFill
         };
         _palaces.AddThemeFontSizeOverride("font_size", 15);
@@ -81,6 +88,9 @@ public partial class PalaceMenu : CanvasLayer
         _palaces.SetColumnTitle(2, "Gold+");
         _palaces.SetColumnExpand(2, false);
         _palaces.SetColumnCustomMinimumWidth(2, 70);
+        _palaces.SetColumnTitle(3, "Due");
+        _palaces.SetColumnExpand(3, false);
+        _palaces.SetColumnCustomMinimumWidth(3, 60);
         _palaces.ItemSelected += () => ShowPalace(_palaces.GetSelected()?.GetMetadata(0).AsInt32() ?? -1);
         palaceColumn.AddChild(_palaces);
 
@@ -90,7 +100,7 @@ public partial class PalaceMenu : CanvasLayer
         roomColumn.AddChild(_roomsTitle);
         _rooms = new Tree
         {
-            Columns = 4, HideRoot = true, ColumnTitlesVisible = true,
+            Columns = 5, HideRoot = true, ColumnTitlesVisible = true,
             SelectMode = Tree.SelectModeEnum.Row, SizeFlagsVertical = Control.SizeFlags.ExpandFill
         };
         _rooms.AddThemeFontSizeOverride("font_size", 15);
@@ -106,6 +116,9 @@ public partial class PalaceMenu : CanvasLayer
         _rooms.SetColumnCustomMinimumWidth(2, 170);
         _rooms.SetColumnExpand(3, false);
         _rooms.SetColumnCustomMinimumWidth(3, 190);
+        _rooms.SetColumnTitle(4, "Recall");
+        _rooms.SetColumnExpand(4, false);
+        _rooms.SetColumnCustomMinimumWidth(4, 140);
         _rooms.ItemSelected += ShowSelectedRoom;
         _rooms.ItemActivated += LoadSelected;
         roomColumn.AddChild(_rooms);
@@ -113,6 +126,7 @@ public partial class PalaceMenu : CanvasLayer
         _details = ViewerHud.RichText(14);
         _details.BbcodeEnabled = true;
         _details.CustomMinimumSize = new(0, 215);
+        _details.MetaClicked += meta => { if (long.TryParse(meta.AsString(), out var id)) SelectRoom(id); };
         roomColumn.AddChild(_details);
 
         var buttons = new HBoxContainer { Alignment = BoxContainer.AlignmentMode.End };
@@ -125,9 +139,21 @@ public partial class PalaceMenu : CanvasLayer
         _trophies.Toggled += on =>
         {
             _showingTrophies = on;
-            if (on) ShowTrophies(); else ShowSelectedRoom();
+            if (on) { _showingReviewNext = false; _reviewNext.SetPressedNoSignal(false); ShowTrophies(); }
+            else ShowSelectedRoom();
         };
+        _reviewNext = new Button { Text = "Review next", CustomMinimumSize = new(130, 38), ToggleMode = true };
+        _reviewNext.Toggled += on =>
+        {
+            _showingReviewNext = on;
+            if (on) { _showingTrophies = false; _trophies.SetPressedNoSignal(false); ShowReviewNext(); }
+            else ShowSelectedRoom();
+        };
+        buttons.AddChild(_reviewNext);
         buttons.AddChild(_trophies);
+        var keys = new Button { Text = "Keys", CustomMinimumSize = new(100, 38) };
+        keys.Pressed += () => KeyBindingsRequested?.Invoke();
+        buttons.AddChild(keys);
         _close = new Button { Text = "Close", CustomMinimumSize = new(110, 38) };
         _close.Pressed += () => CloseRequested?.Invoke();
         buttons.AddChild(_close);
@@ -136,14 +162,18 @@ public partial class PalaceMenu : CanvasLayer
         buttons.AddChild(_load);
     }
 
-    public void Open(string databasePath, long? currentRoomId, bool canClose, string? progressDatabasePath = null)
+    // today is when FSRS forecasts are made; verification moves it forward to see recall decay.
+    public void Open(string databasePath, long? currentRoomId, bool canClose, string? progressDatabasePath = null, DateOnly? today = null)
     {
-        _showingTrophies = false;
+        _today = today ?? DateOnly.FromDateTime(DateTime.Now);
+        _showingTrophies = _showingReviewNext = false;
         _trophies.SetPressedNoSignal(false);
+        _reviewNext.SetPressedNoSignal(false);
         LoadProgress(progressDatabasePath ?? databasePath);
         _currentRoomId = currentRoomId;
         _close.Disabled = !canClose;
-        _hint.Text = "Double-click or Enter loads a Room" + (canClose ? "   ·   M or Esc closes" : "");
+        _hint.Text = "Double-click or Enter loads a Room" + (canClose ? $"   ·   {Keys.Label(KeyAction.PalaceMenu)} or Esc closes" : "") +
+            $"   ·   {Keys.Label(KeyAction.KeyBindings)} Keys";
         _database.Text = databasePath;
         _database.TooltipText = databasePath;
         _palaces.Clear();
@@ -166,6 +196,7 @@ public partial class PalaceMenu : CanvasLayer
             _details.Text = "This database has no Rooms.";
             return;
         }
+        LoadForecasts();
         var palaceRoot = _palaces.CreateItem();
         var start = currentRoomId is { } id ? _catalog.ToList().FindIndex(p => p.Rooms.Any(r => r.Id == id)) : -1;
         start = Math.Max(start, 0);
@@ -186,6 +217,10 @@ public partial class PalaceMenu : CanvasLayer
             item.SetText(2, $"{golden}/{palace.Rooms.Count}");
             item.SetTextAlignment(2, HorizontalAlignment.Center);
             item.SetCustomColor(2, golden > 0 ? ViewerHud.MedalColor(Medal.Gold) : ViewerHud.Muted);
+            var due = palace.Rooms.Count(r => Forecast(r.Id)?.Due == true);
+            item.SetText(3, due > 0 ? due.ToString() : "—");
+            item.SetTextAlignment(3, HorizontalAlignment.Center);
+            item.SetCustomColor(3, due > 0 ? Missing : ViewerHud.Muted);
             if (i == start) startItem = item;
         }
         startItem?.Select(0);
@@ -196,7 +231,8 @@ public partial class PalaceMenu : CanvasLayer
 
     public override void _UnhandledKeyInput(InputEvent @event)
     {
-        if (!IsOpen || @event is not InputEventKey { Pressed: true, Echo: false } key) return;
+        // The key bindings menu sits on top and owns the keyboard while open.
+        if (!IsOpen || GetParent<RoomViewer>().KeysMenu.IsOpen || @event is not InputEventKey { Pressed: true, Echo: false } key) return;
         if (key.Keycode is Key.Enter or Key.KpEnter && !_load.Disabled)
         {
             LoadSelected();
@@ -228,6 +264,15 @@ public partial class PalaceMenu : CanvasLayer
             item.SetCustomColor(2, ViewerHud.MedalColor(progress?.BestMedal ?? Medal.None));
             item.SetText(3, room.ImageSummary);
             item.SetCustomColor(3, room.Missing > 0 ? Missing : room.HasImages ? Found : ViewerHud.Muted);
+            var forecast = Forecast(room.Id);
+            item.SetText(4, forecast switch
+            {
+                null => _forecastError is null ? "" : "unavailable",
+                { Rehearsed: false } => "new",
+                { Due: true } => $"{forecast.WeakPositions.Count} weak · {Percent(forecast.AverageRecall)}",
+                _ => $"ok · {Percent(forecast.AverageRecall)}"
+            });
+            item.SetCustomColor(4, forecast is { Due: true } ? Missing : forecast is { Rehearsed: true } ? Found : ViewerHud.Muted);
             if (room.Id == _currentRoomId) current = item;
         }
         if (palace.Rooms.Count == 0) _details.Text = "This Palace has no Rooms yet.";
@@ -247,7 +292,7 @@ public partial class PalaceMenu : CanvasLayer
     {
         var room = SelectedRoom();
         _load.Disabled = room is null;
-        if (room is null || _showingTrophies) return;
+        if (room is null || _showingTrophies || _showingReviewNext) return;
         var header = $"[b]Room {room.Id}[/b] · {Plural(room.LociCount, "Locus", "Loci")} · {room.ImageSummary}" +
             (room.Id == _currentRoomId ? "   [color=#93a7ac](currently loaded)[/color]" : "");
         var cells = new List<string>();
@@ -263,10 +308,90 @@ public partial class PalaceMenu : CanvasLayer
             var path = image.State == SurfaceImageState.None ? "default surface" : Escape(image.FullPath ?? image.StoredPath ?? "");
             cells.Add($"[cell padding=0,2,24,2]{name}[/cell][cell padding=0,2,24,2][color=#{color.ToHtml(false)}]{state}[/color][/cell][cell][color=#93a7ac]{path}[/color][/cell]");
         }
-        _details.Text = $"{header}\n{ProgressSummary(room)}[table=3]{string.Concat(cells)}[/table]";
+        _details.Text = $"{header}\n{ProgressSummary(room)}{ForecastSummary(room)}[table=3]{string.Concat(cells)}[/table]";
     }
 
     private RoomProgress? Progress(long roomId) => _progress.GetValueOrDefault(roomId);
+    private RoomForecast? Forecast(long roomId) => _forecasts.GetValueOrDefault(roomId);
+    private static string Percent(double value) => (value * 100).ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "%";
+
+    // FSRS needs the Rust scheduler; if it cannot load, the menu still works without forecasts.
+    private void LoadForecasts()
+    {
+        try
+        {
+            var loci = _catalog.SelectMany(p => p.Rooms).GroupBy(r => r.Id).ToDictionary(g => g.Key, g => g.First().LocusIds);
+            _forecasts = ReviewPlanner.Forecast(_runs, loci, _today);
+            _forecastError = null;
+        }
+        catch (ViewerException ex)
+        {
+            _forecasts = new Dictionary<long, RoomForecast>();
+            _forecastError = ex.Message;
+            GD.PrintErr(ex.Message);
+        }
+        var due = ReviewPlanner.Ranked(_forecasts.Values).Count;
+        if (_forecastError is not null) _stats.Text += "   ·   review forecasts unavailable";
+        else if (_runs.Count > 0) _stats.Text += due == 0 ? "   ·   nothing due" : $"   ·   {Plural(due, "Room")} due";
+    }
+
+    private string ForecastSummary(RoomSummary room)
+    {
+        if (Forecast(room.Id) is not { Rehearsed: true } forecast) return "";
+        var weak = forecast.WeakPositions;
+        return $"[color=#93a7ac]RECALL[/color]  {Percent(forecast.AverageRecall)} average today   ·   " +
+            (weak.Count == 0 ? "every Locus at 90% or better\n"
+                : $"[color=#{Missing.ToHtml(false)}]{weak.Count} of {forecast.LociCount} below 90%[/color]: {LoopDrill.Describe(weak)}   " +
+                  $"[color=#93a7ac](in the Room press {Keys.Label(KeyAction.Loop)}, then TAB, to drill them)[/color]\n");
+    }
+
+    // Rooms ranked by FSRS: most likely-forgotten Loci first. Titles link to the Room.
+    private void ShowReviewNext()
+    {
+        if (_forecastError is { } error)
+        {
+            _details.Text = $"[b]Review next[/b]\n[color=#{Missing.ToHtml(false)}]{Escape(error)}[/color]";
+            return;
+        }
+        var ranked = ReviewPlanner.Ranked(_forecasts.Values);
+        var fresh = _forecasts.Values.Count(f => !f.Rehearsed && f.LociCount > 0);
+        var header = $"[b]Review next[/b]   [color=#93a7ac]FSRS forecast for {_today:MMM d}, aiming for 90% recall · " +
+            $"{Plural(ranked.Count, "Room")} due · {fresh} never rehearsed[/color]\n";
+        if (ranked.Count == 0)
+        {
+            _details.Text = header + (_runs.Count == 0 ? "Rehearse a Room (R) to start forecasting." : "Nothing is due. Every rehearsed Locus is at 90% recall or better.");
+            return;
+        }
+        var rooms = _catalog.SelectMany(p => p.Rooms.Select(r => (Palace: p, Room: r))).GroupBy(x => x.Room.Id).ToDictionary(g => g.Key, g => g.First());
+        var cells = ranked.Take(12).Select((f, i) =>
+        {
+            var (palace, room) = rooms[f.RoomId];
+            var days = _today.DayNumber - f.LastRehearsed!.Value.DayNumber;
+            return $"[cell padding=0,2,14,2][color=#93a7ac]{i + 1}.[/color][/cell]" +
+                $"[cell padding=0,2,20,2][url={f.RoomId}]{Escape(palace.Name)} › {f.RoomId:00} {Escape(room.Title)}[/url][/cell]" +
+                $"[cell padding=0,2,20,2][color=#{Missing.ToHtml(false)}]≈{f.ExpectedForgotten.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)} likely forgotten[/color][/cell]" +
+                $"[cell][color=#93a7ac]{f.WeakPositions.Count} weak · last {(days == 0 ? "today" : days == 1 ? "yesterday" : $"{days} days ago")}[/color][/cell]";
+        });
+        _details.Text = header + $"[table=4]{string.Concat(cells)}[/table]";
+    }
+
+    // Selects a Room from a Review next link and shows its details.
+    public void SelectRoom(long roomId)
+    {
+        var palaceIndex = _catalog.ToList().FindIndex(p => p.Rooms.Any(r => r.Id == roomId));
+        if (palaceIndex < 0) return;
+        _showingReviewNext = _showingTrophies = false;
+        _reviewNext.SetPressedNoSignal(false);
+        _trophies.SetPressedNoSignal(false);
+        for (var item = _palaces.GetRoot()?.GetFirstChild(); item is not null; item = item.GetNext())
+            if (item.GetMetadata(0).AsInt32() == palaceIndex) { item.Select(0); break; }
+        for (var item = _rooms.GetRoot()?.GetFirstChild(); item is not null; item = item.GetNext())
+            if (item.GetMetadata(0).AsInt64() == roomId) { item.Select(0); _rooms.ScrollToItem(item); break; }
+        // Selecting an already-selected row emits no signal, so refresh the details directly.
+        ShowSelectedRoom();
+    }
+
+    public void ToggleReviewNext(bool on) => _reviewNext.ButtonPressed = on;
 
     // History is read from palace.db on every open. A locked or unreadable table only hides stats.
     private void LoadProgress(string progressDatabasePath)

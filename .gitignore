@@ -13,3 +13,4 @@ graphify-out/.graphify_python
 graphify-out/.graphify_sitepackages
 graphify-out/.graphify_root
 Core/*.cs.uid
+Native/*/target/

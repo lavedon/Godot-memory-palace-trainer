@@ -49,10 +49,12 @@ public static class RuntimeVerification
             result["wallTextures"] = viewer.WallTextures.Paths.ToDictionary(p => p.Key.ToString().ToLowerInvariant(), p => p.Value);
             result["textureWarnings"] = viewer.WallTextures.Warnings;
             result["loci"] = viewer.Room?.Loci.Values.OrderBy(l => l.Position).ToArray() ?? [];
+            // Load the Rust FSRS scheduler now so the export check can see where it came from.
+            Check(Fsrs.Parameters.Count == 21, "FSRS scheduler loads");
             using (var process = System.Diagnostics.Process.GetCurrentProcess())
             {
                 result["nativeModules"] = process.Modules.Cast<System.Diagnostics.ProcessModule>()
-                    .Where(m => m.ModuleName is "e_sqlite3.dll" or "coreclr.dll")
+                    .Where(m => m.ModuleName is "e_sqlite3.dll" or "coreclr.dll" or "fsrs_ffi.dll")
                     .Select(m => m.FileName).ToArray();
             }
             Check(viewer.Displays.Count == 26, "All 26 Anchors exist");
@@ -204,14 +206,15 @@ public static class RuntimeVerification
                         Check(target.IsUnderCrosshair(player.Camera, out _), $"Rehearsal guides the view to Position {position}");
                         Keypress(Key.Key2);
                         Keypress(Key.J);
+                        Keypress(Key.K);
                         Keypress(Key.L);
-                        Check(session.Current == position && !viewer.TextVisible, $"Position {position} stays hidden until Space");
+                        Check(session.Current == position && !viewer.TextVisible && viewer.MarkersVisible, $"Position {position} stays hidden until Space; J and K do not toggle");
                         Keypress(Key.Space);
                         Check(viewer.Displays.All(d => d.Billboard.Visible == (d == target)) && viewer.Hud.ReadingVisible, $"Space reveals only Position {position}");
                         if (position == populated[0].PositionNumber) await Capture("rehearsal-reveal");
                         var miss = position == populated[0].PositionNumber || position == populated[^1].PositionNumber;
                         if (miss) misses.Add(position);
-                        Keypress(miss ? Key.Key1 : Key.Key2);
+                        Keypress(miss ? Key.K : Key.J);
                         Check(!target.Billboard.Visible, $"Grading hides Position {position}");
                     }
                     Check(session.Round == 2 && session.RoundPositions.SequenceEqual(misses) && viewer.Hud.RehearsalText.Contains("M I S S E S   O N L Y"), "Round 2 repeats only the misses");
@@ -234,7 +237,8 @@ public static class RuntimeVerification
                     session = viewer.Rehearsal;
                     while (session!.Current is not null)
                     {
-                        Keypress(Key.Space);
+                        Keypress(Key.H);
+                        Check(session.Revealed, "H reveals during a rehearsal");
                         Keypress(Key.Key2);
                         if (populated.Length > 1 && session.IndexInRound == 1)
                             Check(viewer.Hud.RehearsalText.Contains("vs best"), "Ghost split compares with the best run");
@@ -250,7 +254,114 @@ public static class RuntimeVerification
                     Check(!viewer.Menu.IsOpen && viewer.Rehearsal is not null, "Closing the menu returns to the result");
                     Keypress(Key.R);
                     Check(viewer.Rehearsal is null && !viewer.TextVisible && !viewer.Hud.RehearsalVisible && !player.Guiding, "R ends rehearsal and hides text");
+                    Keypress(Key.R);
+                    Keypress(Key.Slash);
+                    Check(viewer.Rehearsal is not null && !viewer.Hud.DrillPromptVisible, "/ does nothing during a rehearsal");
+                    Keypress(Key.Q);
+                    Check(viewer.Rehearsal is null && !viewer.Hud.RehearsalVisible, "Q ends rehearsal");
                     Check(viewer.Displays.Select(d => d.Marker.Modulate).SequenceEqual(markerColors), "Ending rehearsal restores marker colors");
+
+                    Keypress(Key.Slash);
+                    Check(viewer.Hud.DrillPromptVisible && !player.Enabled, "/ opens the loop range prompt");
+                    Keypress(Key.Escape);
+                    Check(!viewer.Hud.DrillPromptVisible && viewer.Drill is null && player.Enabled, "Escape cancels the loop prompt");
+                    Keypress(Key.T);
+                    Check(viewer.Hud.DrillPromptVisible, "T also opens the loop range prompt");
+                    viewer.StartDrill("27");
+                    Check(viewer.Hud.DrillPromptVisible && viewer.Drill is null && viewer.Hud.DrillPromptError.Contains("outside"), "An invalid range keeps the prompt open");
+                    var loop = populated.Take(3).Select(d => d.PositionNumber).ToArray();
+                    viewer.StartDrill(LoopDrill.Describe(loop).Replace('–', '-'));
+                    var drill = viewer.Drill;
+                    Check(drill is not null && !viewer.Hud.DrillPromptVisible && drill.Positions.SequenceEqual(loop) && drill.Current == loop[0], "Loop drill starts at the first Position in range");
+                    Check(viewer.Hud.RehearsalText.Contains("L O O P") && !viewer.TextVisible, "Loop drill hides text until revealed");
+                    for (var lap = 1; lap <= 3; lap++)
+                        foreach (var position in loop)
+                        {
+                            var target = viewer.Displays[position - 1];
+                            target.UpdateScale(player.Camera);
+                            Check(drill!.Lap == lap && drill.Current == position && target.IsUnderCrosshair(player.Camera, out _), $"Loop lap {lap} guides the view to Position {position}");
+                            Keypress(lap == 2 ? Key.H : Key.Space);
+                            Check(viewer.Displays.All(d => d.Billboard.Visible == (d == target)), $"Space or H reveals only Position {position} in the loop");
+                            if (lap == 1 && position == loop[0]) await Capture("loop-reveal");
+                            Keypress(position == loop[0] ? Key.K : Key.J);
+                        }
+                    Check(drill!.Lap == 4 && drill.Current == loop[0] && drill.PreviousLapKnown == loop.Length - 1, "Loop drill keeps lapping, misses included");
+                    Keypress(Key.R);
+                    Check(viewer.Rehearsal is null && viewer.Drill is not null, "R does nothing during a loop drill");
+                    Keypress(Key.Slash);
+                    Check(viewer.Drill is null && viewer.Hud.DrillPromptVisible, "/ during a loop drill picks a new range");
+                    viewer.StartDrill(LoopDrill.Describe(loop).Replace('–', '-'));
+                    Check(viewer.Drill is { Lap: 1, IndexInLap: 0 }, "A new range starts a fresh loop");
+                    Keypress(Key.T);
+                    Check(viewer.Drill is null && !viewer.Hud.RehearsalVisible, "T ends the loop drill");
+                    viewer.StartDrill(LoopDrill.Describe(loop).Replace('–', '-'));
+                    Keypress(Key.Q);
+                    Check(viewer.Drill is null && !viewer.TextVisible && !viewer.Hud.RehearsalVisible && !player.Guiding, "Q ends the loop drill");
+                    Check(viewer.Displays.Select(d => d.Marker.Modulate).SequenceEqual(markerColors), "Ending the loop drill restores marker colors");
+
+                    var keysMenu = viewer.KeysMenu;
+                    Keypress(Key.F1);
+                    Check(keysMenu.IsOpen && !player.Enabled, "F1 opens the key bindings menu");
+                    await Capture("key-bindings");
+                    Keypress(Key.R);
+                    Check(viewer.Rehearsal is null, "Keys do not leak through the key bindings menu");
+                    keysMenu.StartCapture(new KeySlot(KeyAction.Knew, 0));
+                    Keypress(Key.U);
+                    Check(keysMenu.Capturing is null && Keys.Current.Get(KeyAction.Knew, 0) == (long)Key.U, "A pressed key is captured into the chosen slot");
+                    keysMenu.Capture(new KeySlot(KeyAction.Missed, 0), (long)Key.Q);
+                    Check(Keys.Current.Get(KeyAction.Quit, 0) == KeyBindings.None && keysMenu.MessageText.Contains("removed from Quit"), "A clashing key moves and the menu says so");
+                    keysMenu.Capture(new KeySlot(KeyAction.WalkForward, 1), (long)Key.I);
+                    Check(InputMap.ActionGetEvents("walk_forward").OfType<InputEventKey>().Any(e => e.PhysicalKeycode == Key.I), "Walking keys follow their bindings");
+                    var saved = Path.Combine(outputDirectory, "keybindings.cfg");
+                    Check(File.Exists(saved) && File.ReadAllText(saved).Contains($"Knew={(long)Key.U},"), "Bindings are saved");
+                    Keypress(Key.Escape);
+                    Check(!keysMenu.IsOpen && player.Enabled, "Escape closes the key bindings menu");
+                    Check(viewer.Hud.ControlsText.Contains("F1   Keys") && viewer.Hud.ControlsText.StartsWith("WASD   Walk"), "Controls bar shows the bindings");
+                    Keypress(Key.R);
+                    Keypress(Key.Space);
+                    Keypress(Key.J);
+                    Check(viewer.Rehearsal is { IndexInRound: 0, Revealed: true } && viewer.TextVisible, "A key moved off Knew it no longer grades");
+                    Check(viewer.Hud.RehearsalText.Contains("U / 2   Knew it") && viewer.Hud.RehearsalText.Contains("Q / 1   Missed"), "Prompts show rebound keys");
+                    Keypress(Key.U);
+                    Check(viewer.Rehearsal is { IndexInRound: 1 } or { IsComplete: true } && viewer.Rehearsal.FirstPassMisses.Count == 0, "The rebound key grades");
+                    Keypress(Key.R);
+                    Check(viewer.Rehearsal is null, "Rehearse key still ends the rehearsal");
+                    Keypress(Key.M);
+                    Keypress(Key.F1);
+                    Check(viewer.Menu.IsOpen && keysMenu.IsOpen, "F1 opens key bindings over the Palace menu");
+                    keysMenu.ResetDefaults();
+                    Check(Keys.Current.Serialize() == KeyBindings.Defaults().Serialize() && !InputMap.ActionGetEvents("walk_forward").OfType<InputEventKey>().Any(e => e.PhysicalKeycode == Key.I), "Reset restores defaults");
+                    Keypress(Key.Escape);
+                    Check(!keysMenu.IsOpen && viewer.Menu.IsOpen, "Closing key bindings returns to the Palace menu");
+                    Keypress(Key.M);
+                    Check(!viewer.Menu.IsOpen, "Palace menu closes after key bindings");
+
+                    // FSRS: everything was rehearsed today, so nothing is weak yet.
+                    Keypress(Key.Slash);
+                    Check(viewer.Hud.DrillPromptVisible && viewer.Hud.DrillWeakText.Contains("none"), "Freshly rehearsed Loci are not weak spots");
+                    Keypress(Key.Escape);
+                    // Sixty days later recall has decayed below 90% for every Locus.
+                    viewer.ForecastDay = DateOnly.FromDateTime(DateTime.Now).AddDays(60);
+                    Keypress(Key.Slash);
+                    Check(viewer.Hud.DrillWeakText.Contains("Weak spots (below 90% recall)"), "Decayed Loci are offered as weak spots");
+                    Keypress(Key.Tab);
+                    var populatedPositions = populated.Select(d => d.PositionNumber).ToArray();
+                    Check(viewer.Hud.DrillPromptRange == LoopDrill.Describe(populatedPositions), "TAB fills the weak spots into the range");
+                    await Capture("weak-spots");
+                    viewer.StartDrill(viewer.Hud.DrillPromptRange);
+                    Check(viewer.Drill is { } weakDrill && weakDrill.Positions.SequenceEqual(populatedPositions), "Weak spots start a loop drill");
+                    viewer.StopDrill();
+                    Keypress(Key.M);
+                    var forecast = viewer.Menu.Forecasts[viewer.Room.Id];
+                    Check(forecast.Due && forecast.Tested.Count == populated.Length && forecast.Tested.All(l => l.Reviews == 1), "Same-day rehearsals count once");
+                    Check(viewer.Menu.StatsText.Contains("due") && viewer.Menu.DetailsText.Contains("RECALL"), "Palace menu shows due Rooms and recall");
+                    viewer.Menu.ToggleReviewNext(true);
+                    Check(viewer.Menu.DetailsText.Contains("Review next") && viewer.Menu.DetailsText.Contains("likely forgotten"), "Review next ranks due Rooms");
+                    await Capture("review-next");
+                    viewer.Menu.SelectRoom(viewer.Room.Id);
+                    Check(viewer.Menu.DetailsText.Contains("RECALL") && !viewer.Menu.DetailsText.Contains("likely forgotten"), "A Review next link opens the Room");
+                    Keypress(Key.M);
+                    viewer.ForecastDay = null;
                 }
                 Check(viewer.Displays.All(d => d.Marker.Visible), "Individual text toggles preserve marker visibility");
                 player.Position = startPosition;

@@ -69,7 +69,7 @@ try {
         }
         if ($Export -and $Loaded) {
             $exportDirectory = [IO.Path]::GetFullPath((Split-Path -Parent $application)) + [IO.Path]::DirectorySeparatorChar
-            foreach ($moduleName in @('e_sqlite3.dll','coreclr.dll')) {
+            foreach ($moduleName in @('e_sqlite3.dll','coreclr.dll','fsrs_ffi.dll')) {
                 $module = @($report.nativeModules | Where-Object { [IO.Path]::GetFileName($_) -eq $moduleName })
                 if ($module.Count -ne 1 -or -not $module[0].StartsWith($exportDirectory,[StringComparison]::OrdinalIgnoreCase)) {
                     throw "$Name did not load $moduleName from its own export directory."

@@ -8,6 +8,9 @@ public sealed record SurfaceImage(RoomWall Wall, string? StoredPath, string? Ful
 
 public sealed record RoomSummary(long Id, string Title, int LociCount, IReadOnlyList<SurfaceImage> Images)
 {
+    // Loci.Id at each displayable Position (1–26), chosen like the viewer: lowest Id wins a shared Position.
+    public IReadOnlyDictionary<int, long> LocusIds { get; init; } = new Dictionary<int, long>();
+
     public int Found => Images.Count(i => i.State == SurfaceImageState.Found);
     public int Missing => Images.Count(i => i.State == SurfaceImageState.Missing);
     public bool HasImages => Found > 0;
@@ -90,7 +93,22 @@ public sealed class PalaceCatalog
                     rooms.Add((palaceId, new RoomSummary(id, title, reader.GetInt32(3), images)));
                 }
             }
+            var locusIds = new Dictionary<long, Dictionary<int, long>>();
+            using (var lociCommand = Command("SELECT RoomId, Id, Position FROM Loci WHERE typeof(Position) = 'integer' AND Position BETWEEN 1 AND " +
+                RoomLayout.Capacity + " ORDER BY Id"))
+            using (var reader = lociCommand.ExecuteReader())
+            {
+                while (reader.Read())
+                {
+                    if (reader.IsDBNull(0)) continue;
+                    var byPosition = locusIds.TryGetValue(reader.GetInt64(0), out var found) ? found : locusIds[reader.GetInt64(0)] = [];
+                    byPosition.TryAdd(reader.GetInt32(2), reader.GetInt64(1));
+                }
+            }
             transaction.Commit();
+            for (var i = 0; i < rooms.Count; i++)
+                if (locusIds.TryGetValue(rooms[i].Room.Id, out var byPosition))
+                    rooms[i] = rooms[i] with { Room = rooms[i].Room with { LocusIds = byPosition } };
 
             var result = palaces
                 .Select(p => new PalaceSummary(p.Id, p.Name, p.Description,

@@ -18,6 +18,7 @@ try {
     if (Select-String -LiteralPath $exportLog -Pattern '^ERROR:' -Quiet) { throw "Godot reported an export error. See $exportLog" }
     if (-not (Get-ChildItem -LiteralPath 'artifacts/windows' -Recurse -Filter 'e_sqlite3.dll')) { throw 'Native SQLite dependency is missing from export.' }
     if (-not (Get-ChildItem -LiteralPath 'artifacts/windows' -Recurse -Filter 'coreclr.dll')) { throw 'Self-contained .NET runtime is missing from export.' }
+    if (-not (Get-ChildItem -LiteralPath 'artifacts/windows' -Recurse -Filter 'fsrs_ffi.dll')) { throw 'FSRS scheduler (fsrs_ffi.dll) is missing from export.' }
     @'
 # Palace Room Viewer — Windows x64
 
@@ -42,8 +43,14 @@ L or left-click: toggle the Locus under the crosshair.
 K: toggle numbered markers. L works on hidden text and leaves other Loci unchanged.
 J hides all text if any is visible; otherwise it shows all text.
 Escape: release mouse. Click the Room: resume. M: Palace menu. Alt+F4: close.
-R: rehearse the Room in order. Space reveals; 1 = missed, 2 = knew it.
-Misses repeat until a clean round. R again stops. V: sound on/off.
+R: rehearse the Room in order. Space or H reveals; J = knew it, K = missed
+(2 and 1 also work). Misses repeat until a clean round. Q (or R) stops. V: sound on/off.
+/ (or T): loop drill. Type Positions such as 1-3 or 1-3, 7, then Enter; the camera
+loops those Positions over and over (same keys) until Q. / mid-drill picks a new range.
+Review next (Palace menu): FSRS ranks Rooms by how many Loci you have likely
+forgotten, from your rehearsal first passes. In a Room, / then TAB loops its weak spots.
+F1 (or Keys in the Palace menu): change any key. Saved to keybindings.cfg in
+%APPDATA%\Godot\app_userdata\Palace Room Viewer\. The keys above are the defaults.
 Each rehearsal is timed and scored: beat your best time, chase medals
 (Bronze to Platinum), keep a daily streak, and unlock trophies (Palace menu).
 Aim at a Position with text enabled to read; release the mouse to scroll long text.
