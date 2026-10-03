@@ -17,6 +17,8 @@ public partial class PalaceMenu : CanvasLayer
     private Label _roomsTitle = null!;
     private RichTextLabel _details = null!;
     private Button _load = null!;
+    private Button _copyAnki = null!;
+    private string _databasePath = "";
     private Button _close = null!;
     private Label _hint = null!;
     private Label _stats = null!;
@@ -29,6 +31,7 @@ public partial class PalaceMenu : CanvasLayer
     private DateOnly _today;
     private IReadOnlyList<RehearsalRun> _runs = [];
     private IReadOnlyDictionary<long, RoomProgress> _progress = new Dictionary<long, RoomProgress>();
+    private IReadOnlyDictionary<long, RoomLearning> _learning = new Dictionary<long, RoomLearning>();
     private IReadOnlyList<PalaceSummary> _catalog = [];
     private long? _currentRoomId;
     public event Action<long>? RoomChosen;
@@ -41,6 +44,9 @@ public partial class PalaceMenu : CanvasLayer
     public IReadOnlyList<RehearsalRun> Runs => _runs;
     public string DetailsText => _details.GetParsedText();
     public string StatsText => _stats.Text;
+    public string HintText => _hint.Text;
+    // The last command put on the clipboard; verification reads this because headless runs have no clipboard.
+    public string? CopiedCommand { get; private set; }
     public IReadOnlyDictionary<long, RoomForecast> Forecasts => _forecasts;
 
     public override void _Ready()
@@ -151,6 +157,10 @@ public partial class PalaceMenu : CanvasLayer
         };
         buttons.AddChild(_reviewNext);
         buttons.AddChild(_trophies);
+        _copyAnki = new Button { Text = "Copy Anki command", CustomMinimumSize = new(170, 38), Disabled = true,
+            TooltipText = "Copy the terminal command that builds this Room's grouped Anki cards" };
+        _copyAnki.Pressed += CopyAnkiCommand;
+        buttons.AddChild(_copyAnki);
         var keys = new Button { Text = "Keys", CustomMinimumSize = new(100, 38) };
         keys.Pressed += () => KeyBindingsRequested?.Invoke();
         buttons.AddChild(keys);
@@ -175,6 +185,8 @@ public partial class PalaceMenu : CanvasLayer
         _hint.Text = "Double-click or Enter loads a Room" + (canClose ? $"   ·   {Keys.Label(KeyAction.PalaceMenu)} or Esc closes" : "") +
             $"   ·   {Keys.Label(KeyAction.KeyBindings)} Keys";
         _database.Text = databasePath;
+        _databasePath = databasePath;
+        _copyAnki.Disabled = true;
         _database.TooltipText = databasePath;
         _palaces.Clear();
         _rooms.Clear();
@@ -282,6 +294,31 @@ public partial class PalaceMenu : CanvasLayer
         _rooms.ScrollToItem(select);
     }
 
+    private AnkiCardCommand AnkiCommand(RoomSummary room) =>
+        AnkiCards.For(_catalog.First(p => p.Rooms.Contains(room)), room, _databasePath);
+
+    private string AnkiSummary(RoomSummary room)
+    {
+        var anki = AnkiCommand(room);
+        if (!anki.Ready) return $"[color=#93a7ac]ANKI CARDS[/color]  [color=#{Missing.ToHtml(false)}]Not ready: {Escape(anki.Status)}[/color]\n";
+        return $"[color=#93a7ac]ANKI CARDS[/color]  [color=#{Found.ToHtml(false)}]Ready[/color], room image found. " +
+            "Run with Anki open; rerunning is safe (it skips cards it already made).\n" +
+            $"[color=#f1d39b]{Escape(anki.Command!)}[/color]\n" +
+            (anki.ScriptFound ? "" : $"[color=#{Missing.ToHtml(false)}]The card script was not found at {Escape(AnkiCards.DefaultScript)}[/color]\n");
+    }
+
+    // The command is already shown in the details; this puts it on the clipboard.
+    private void CopyAnkiCommand()
+    {
+        if (SelectedRoom() is not { } room || AnkiCommand(room) is not { Ready: true, Command: { } command }) return;
+        DisplayServer.ClipboardSet(command);
+        CopiedCommand = command;
+        _hint.Text = $"Copied the Anki card command for Room {room.Id}. Paste it into a terminal with Anki open.";
+    }
+
+    public void PressCopyAnkiCommand() => _copyAnki.EmitSignal(BaseButton.SignalName.Pressed);
+    public bool CanCopyAnkiCommand => !_copyAnki.Disabled;
+
     private RoomSummary? SelectedRoom()
     {
         var id = _rooms.GetSelected()?.GetMetadata(0).AsInt64();
@@ -292,6 +329,7 @@ public partial class PalaceMenu : CanvasLayer
     {
         var room = SelectedRoom();
         _load.Disabled = room is null;
+        _copyAnki.Disabled = room is null || !AnkiCommand(room).Ready;
         if (room is null || _showingTrophies || _showingReviewNext) return;
         var header = $"[b]Room {room.Id}[/b] · {Plural(room.LociCount, "Locus", "Loci")} · {room.ImageSummary}" +
             (room.Id == _currentRoomId ? "   [color=#93a7ac](currently loaded)[/color]" : "");
@@ -308,7 +346,7 @@ public partial class PalaceMenu : CanvasLayer
             var path = image.State == SurfaceImageState.None ? "default surface" : Escape(image.FullPath ?? image.StoredPath ?? "");
             cells.Add($"[cell padding=0,2,24,2]{name}[/cell][cell padding=0,2,24,2][color=#{color.ToHtml(false)}]{state}[/color][/cell][cell][color=#93a7ac]{path}[/color][/cell]");
         }
-        _details.Text = $"{header}\n{ProgressSummary(room)}{ForecastSummary(room)}[table=3]{string.Concat(cells)}[/table]";
+        _details.Text = $"{header}\n{ProgressSummary(room)}{LearningSummary(room)}{ForecastSummary(room)}{AnkiSummary(room)}[table=3]{string.Concat(cells)}[/table]";
     }
 
     private RoomProgress? Progress(long roomId) => _progress.GetValueOrDefault(roomId);
@@ -403,13 +441,39 @@ public partial class PalaceMenu : CanvasLayer
             GD.PrintErr(ex.Message);
         }
         _progress = RoomProgress.ByRoom(_runs);
+        IReadOnlyDictionary<long, DateTimeOffset> learningStarts;
+        try { learningStarts = new RehearsalStore().LoadFirstLoopDrills(progressDatabasePath); }
+        catch (Exception ex)
+        {
+            learningStarts = new Dictionary<long, DateTimeOffset>();
+            GD.PrintErr(ex.Message);
+        }
+        _learning = RoomLearning.ByRoom(learningStarts, _runs);
         var streak = RehearsalStreak.Days(_runs.Select(r => r.Day), DateOnly.FromDateTime(DateTime.Now));
         var trophies = Achievements.Unlocked(_runs).Count;
         var medals = _progress.Values.GroupBy(p => p.BestMedal).Where(g => g.Key >= Medal.Gold).OrderByDescending(g => g.Key)
             .Select(g => $"{g.Count()} {g.Key}");
+        var learned = _learning.Values.Count(l => l.Learned);
         _stats.Text = _runs.Count == 0 ? "No rehearsals yet. Load a Room and press R to set your first time."
             : $"Day {streak} streak   ·   {Plural(_runs.Count, "rehearsal")}   ·   {trophies} of {Achievements.All.Count} trophies" +
-              string.Concat(medals.Select(m => "   ·   " + m));
+              string.Concat(medals.Select(m => "   ·   " + m)) + (learned > 0 ? $"   ·   {Plural(learned, "Room")} learned" : "");
+    }
+
+    // From the Room's first loop drill to its first flawless rehearsal of all 26 Positions.
+    private string LearningSummary(RoomSummary room)
+    {
+        if (_learning.GetValueOrDefault(room.Id) is not { } learning) return "";
+        if (learning.LearnedBy is { } run)
+            return learning.Duration is { } took
+                ? $"[color=#93a7ac]LEARNED[/color]  in [b]{RoomLearning.Format(took)}[/b]   ·   first loop drill {learning.StartedAt!.Value.LocalDateTime:MMM d}, " +
+                  $"flawless through all 26 on {run.CompletedAt.LocalDateTime:MMM d}\n"
+                : $"[color=#93a7ac]LEARNED[/color]  flawless through all 26 on {run.CompletedAt.LocalDateTime:MMM d}   ·   " +
+                  "[color=#93a7ac]untimed: no loop drill was recorded before it[/color]\n";
+        var started = learning.StartedAt!.Value;
+        var populated = room.LocusIds.Count;
+        return $"[color=#93a7ac]LEARNING[/color]  {RoomLearning.Format(DateTimeOffset.Now - started)} so far, since the first loop drill on {started.LocalDateTime:MMM d}   ·   " +
+            "[color=#93a7ac]learned at the first flawless rehearsal of all 26 Loci" +
+            (populated < RoomLayout.Capacity ? $"; this Room has {populated}" : "") + "[/color]\n";
     }
 
     private string ProgressSummary(RoomSummary room)

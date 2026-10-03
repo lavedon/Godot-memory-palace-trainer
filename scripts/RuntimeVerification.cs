@@ -190,6 +190,8 @@ public static class RuntimeVerification
                     viewer.ProgressDatabasePath = progressDatabase;
                     var store = new RehearsalStore();
                     var earlierRuns = store.Load(progressDatabase).Count;
+                    var learnedEarlier = store.Load(progressDatabase).Any(r => r.RoomId == viewer.Room.Id && RoomLearning.Learns(r));
+                    var clockStartedEarlier = store.LoadFirstLoopDrills(progressDatabase).ContainsKey(viewer.Room.Id);
                     var markerColors = viewer.Displays.Select(d => d.Marker.Modulate).ToArray();
                     viewer.GuideSeconds = 0;
                     Keypress(Key.R);
@@ -245,6 +247,9 @@ public static class RuntimeVerification
                     }
                     Check(viewer.LastOutcome is { Run.Perfect: true, SaveError: null } && viewer.Hud.RehearsalText.Contains("flawless"), "Flawless second run");
                     if (earlierRuns == 0) Check(viewer.LastOutcome!.Unlocked.Any(a => a.Id == "flawless"), "Flawless unlocks its trophy");
+                    if (populated.Length == RoomLayout.Capacity && !learnedEarlier)
+                        Check(viewer.LastOutcome!.JustLearned is { Learned: true } && viewer.Hud.RehearsalText.Contains("ROOM LEARNED"), "A flawless walk of all 26 learns the Room");
+                    else Check(viewer.LastOutcome!.JustLearned is null && !viewer.Hud.RehearsalText.Contains("ROOM LEARNED"), "Only a Room's first flawless walk of all 26 learns it");
                     Check(store.Load(progressDatabase).Count == earlierRuns + 2, "Every completed rehearsal is saved");
                     Keypress(Key.M);
                     Check(viewer.Menu.IsOpen && viewer.Menu.Runs.Count == earlierRuns + 2 && viewer.Menu.StatsText.Contains("streak"), "Palace menu shows rehearsal stats");
@@ -274,6 +279,9 @@ public static class RuntimeVerification
                     var drill = viewer.Drill;
                     Check(drill is not null && !viewer.Hud.DrillPromptVisible && drill.Positions.SequenceEqual(loop) && drill.Current == loop[0], "Loop drill starts at the first Position in range");
                     Check(viewer.Hud.RehearsalText.Contains("L O O P") && !viewer.TextVisible, "Loop drill hides text until revealed");
+                    var learningStarts = store.LoadFirstLoopDrills(progressDatabase);
+                    Check(learningStarts.ContainsKey(viewer.Room.Id) && viewer.Hud.RehearsalText.Contains("Learning clock started") == !clockStartedEarlier,
+                        "The Room's first loop drill starts its learning clock");
                     for (var lap = 1; lap <= 3; lap++)
                         foreach (var position in loop)
                         {
@@ -292,11 +300,28 @@ public static class RuntimeVerification
                     Check(viewer.Drill is null && viewer.Hud.DrillPromptVisible, "/ during a loop drill picks a new range");
                     viewer.StartDrill(LoopDrill.Describe(loop).Replace('–', '-'));
                     Check(viewer.Drill is { Lap: 1, IndexInLap: 0 }, "A new range starts a fresh loop");
+                    Check(store.LoadFirstLoopDrills(progressDatabase)[viewer.Room.Id] == learningStarts[viewer.Room.Id] && !viewer.Hud.RehearsalText.Contains("Learning clock"),
+                        "Later loop drills keep the first start");
                     Keypress(Key.T);
                     Check(viewer.Drill is null && !viewer.Hud.RehearsalVisible, "T ends the loop drill");
                     viewer.StartDrill(LoopDrill.Describe(loop).Replace('–', '-'));
                     Keypress(Key.Q);
                     Check(viewer.Drill is null && !viewer.TextVisible && !viewer.Hud.RehearsalVisible && !player.Guiding, "Q ends the loop drill");
+
+                    // Regression: Enter in the loop prompt re-captures the mouse, and the re-centring motion
+                    // used to cancel the glide to the first station. Uses a real glide, not an instant one.
+                    viewer.GuideSeconds = .7f;
+                    viewer.StartDrill(LoopDrill.Describe(loop).Replace('–', '-'));
+                    player.CaptureMouse();
+                    // Headless runs cannot capture a real mouse, so the motion goes straight to the look handler.
+                    player.MouseLook(new(60, 0));
+                    Check(player.Guiding && player.SettlingCapture, "Capturing the mouse does not cancel the glide to the first loop station");
+                    await viewer.ToSignal(viewer.GetTree().CreateTimer(.3), SceneTreeTimer.SignalName.Timeout);
+                    player.MouseLook(new(60, 0));
+                    Check(!player.Guiding, "Looking around after the capture settles still cancels the glide");
+                    viewer.StopDrill();
+                    viewer.GuideSeconds = 0;
+                    Input.MouseMode = Input.MouseModeEnum.Visible;
                     Check(viewer.Displays.Select(d => d.Marker.Modulate).SequenceEqual(markerColors), "Ending the loop drill restores marker colors");
 
                     var keysMenu = viewer.KeysMenu;
@@ -355,11 +380,21 @@ public static class RuntimeVerification
                     var forecast = viewer.Menu.Forecasts[viewer.Room.Id];
                     Check(forecast.Due && forecast.Tested.Count == populated.Length && forecast.Tested.All(l => l.Reviews == 1), "Same-day rehearsals count once");
                     Check(viewer.Menu.StatsText.Contains("due") && viewer.Menu.DetailsText.Contains("RECALL"), "Palace menu shows due Rooms and recall");
+                    Check(viewer.Menu.DetailsText.Contains(populated.Length == RoomLayout.Capacity ? "LEARNED" : "LEARNING"), "Palace menu shows the Room's learning time");
                     viewer.Menu.ToggleReviewNext(true);
                     Check(viewer.Menu.DetailsText.Contains("Review next") && viewer.Menu.DetailsText.Contains("likely forgotten"), "Review next ranks due Rooms");
                     await Capture("review-next");
                     viewer.Menu.SelectRoom(viewer.Room.Id);
                     Check(viewer.Menu.DetailsText.Contains("RECALL") && !viewer.Menu.DetailsText.Contains("likely forgotten"), "A Review next link opens the Room");
+                    Check(viewer.Menu.DetailsText.Contains("ANKI CARDS"), "Room details show whether Anki cards can be built");
+                    if (viewer.Menu.CanCopyAnkiCommand)
+                    {
+                        viewer.Menu.PressCopyAnkiCommand();
+                        Check(viewer.Menu.CopiedCommand is { } copied && copied.Contains("db_to_anki_room_cloze.py") && copied.EndsWith($"--rooms {viewer.Room.Id}") &&
+                            viewer.Menu.HintText.Contains("Copied"), "Copy Anki command puts the card command on the clipboard");
+                        result["ankiCommand"] = viewer.Menu.CopiedCommand;
+                    }
+                    else Check(viewer.Menu.DetailsText.Contains("Not ready") && viewer.Menu.CopiedCommand is null, "Rooms the card script would skip offer no command");
                     Keypress(Key.M);
                     viewer.ForecastDay = null;
                 }

@@ -10,6 +10,12 @@ public sealed record RoomSummary(long Id, string Title, int LociCount, IReadOnly
 {
     // Loci.Id at each displayable Position (1–26), chosen like the viewer: lowest Id wins a shared Position.
     public IReadOnlyDictionary<int, long> LocusIds { get; init; } = new Dictionary<int, long>();
+    public long? PalaceId { get; init; }
+    // Rooms.RoomImage as stored (the image on the Anki cards), and whether that file exists.
+    public string? RoomImage { get; init; }
+    public bool RoomImageExists { get; init; }
+    // Reachable through PreviousId from its Palace's first Room; null without a PreviousId column.
+    public bool? InPalaceOrder { get; init; }
 
     public int Found => Images.Count(i => i.State == SurfaceImageState.Found);
     public int Missing => Images.Count(i => i.State == SurfaceImageState.Missing);
@@ -71,9 +77,25 @@ public sealed class PalaceCatalog
             }
 
             // Only fixed, known identifiers are interpolated.
+            var hasRoomImage = roomColumns.Contains("RoomImage");
             var sql = "SELECT r.Id, r.Title, " + (grouped ? "r.PalaceId" : "NULL") +
                 ", (SELECT COUNT(*) FROM Loci l WHERE l.RoomId = r.Id)" +
-                string.Concat(imageColumns.Select(p => $", r.\"{p.Value}\"")) + " FROM Rooms r ORDER BY r.Id";
+                string.Concat(imageColumns.Select(p => $", r.\"{p.Value}\"")) +
+                (hasRoomImage ? ", r.RoomImage" : ", NULL") + " FROM Rooms r ORDER BY r.Id";
+            // The walk the Anki card script makes: from each Palace's Room without a PreviousId.
+            var hasOrder = grouped && roomColumns.Contains("PreviousId");
+            var ordered = new HashSet<(long RoomId, long PalaceId)>();
+            if (hasOrder)
+            {
+                using var orderCommand = Command("""
+                    WITH RECURSIVE chain(Id, PalaceId) AS (
+                      SELECT Id, PalaceId FROM Rooms WHERE PalaceId IS NOT NULL AND PreviousId IS NULL
+                      UNION SELECT r.Id, chain.PalaceId FROM Rooms r JOIN chain ON r.PreviousId = chain.Id)
+                    SELECT Id, PalaceId FROM chain
+                    """);
+                using var orderReader = orderCommand.ExecuteReader();
+                while (orderReader.Read()) ordered.Add((orderReader.GetInt64(0), orderReader.GetInt64(1)));
+            }
             var rooms = new List<(long? PalaceId, RoomSummary Room)>();
             using (var roomCommand = Command(sql))
             using (var reader = roomCommand.ExecuteReader())
@@ -90,7 +112,14 @@ public sealed class PalaceCatalog
                         var stored = index < 0 || reader.IsDBNull(4 + index) ? null : reader.GetValue(4 + index) as string;
                         images.Add(Resolve(wall, stored, baseDirectory));
                     }
-                    rooms.Add((palaceId, new RoomSummary(id, title, reader.GetInt32(3), images)));
+                    var roomImage = reader.GetValue(4 + imageColumns.Length) as string;
+                    rooms.Add((palaceId, new RoomSummary(id, title, reader.GetInt32(3), images)
+                    {
+                        PalaceId = palaceId,
+                        RoomImage = string.IsNullOrWhiteSpace(roomImage) ? null : roomImage,
+                        RoomImageExists = !string.IsNullOrWhiteSpace(roomImage) && Path.IsPathFullyQualified(roomImage) && File.Exists(roomImage),
+                        InPalaceOrder = hasOrder ? palaceId is { } p && ordered.Contains((id, p)) : null
+                    }));
                 }
             }
             var locusIds = new Dictionary<long, Dictionary<int, long>>();

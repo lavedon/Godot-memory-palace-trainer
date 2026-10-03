@@ -4,11 +4,21 @@ using Microsoft.Data.Sqlite;
 
 namespace PalaceRoomViewer.Core;
 
-// Rehearsal history in palace.db. This is the viewer's only write: one additive table,
-// created on the first save, one INSERT per completed rehearsal. Rooms and Loci are never written.
+// Rehearsal history in palace.db. These are the viewer's only writes: two additive tables, each
+// created on its first write. RehearsalRuns gets one INSERT per completed rehearsal; FirstLoopDrills
+// gets one row per Room, when its first loop drill starts its learning clock (ADR 0005).
+// Rooms and Loci are never written.
 // Tables created before LocusIds existed gain that nullable column on their next save (ADR 0004).
 public sealed class RehearsalStore
 {
+    public const string LoopDrillTable = "FirstLoopDrills";
+    public const string CreateLoopDrillSql = """
+        CREATE TABLE IF NOT EXISTS FirstLoopDrills (
+            RoomId    INTEGER PRIMARY KEY REFERENCES Rooms(Id) ON DELETE CASCADE,
+            StartedAt TEXT    NOT NULL    -- ISO 8601 with UTC offset; the Room's first loop drill, never updated
+        );
+        """;
+
     public const string Table = "RehearsalRuns";
     public const string CreateSql = """
         CREATE TABLE IF NOT EXISTS RehearsalRuns (
@@ -38,12 +48,7 @@ public sealed class RehearsalStore
         using var connection = Open(databasePath, SqliteOpenMode.ReadOnly);
         try
         {
-            using (var exists = connection.CreateCommand())
-            {
-                exists.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $name";
-                exists.Parameters.AddWithValue("$name", Table);
-                if (exists.ExecuteScalar() is null) return [];
-            }
+            if (!TableExists(connection, Table)) return [];
             using var command = connection.CreateCommand();
             var hasLocusIds = HasLocusIds(connection, null);
             command.CommandText = "SELECT Id, RoomId, StartedAt, CompletedAt, DurationMs, Positions, MissesByRound, SplitsMs, " +
@@ -124,6 +129,74 @@ public sealed class RehearsalStore
         {
             throw new ViewerException($"Could not save the rehearsal.\nSQLite: {ex.Message}", ex);
         }
+    }
+
+    // Read-only. Each Room's first loop drill, for Rooms that have had one.
+    public IReadOnlyDictionary<long, DateTimeOffset> LoadFirstLoopDrills(string databasePath)
+    {
+        using var connection = Open(databasePath, SqliteOpenMode.ReadOnly);
+        try
+        {
+            var starts = new Dictionary<long, DateTimeOffset>();
+            if (!TableExists(connection, LoopDrillTable)) return starts;
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT RoomId, StartedAt FROM FirstLoopDrills";
+            using var reader = command.ExecuteReader();
+            // Rows edited by other tools into something unreadable are skipped.
+            while (reader.Read())
+                if (reader.GetValue(0) is long roomId && reader.GetValue(1) is string text &&
+                    DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var startedAt))
+                    starts[roomId] = startedAt;
+            return starts;
+        }
+        catch (SqliteException ex)
+        {
+            throw new ViewerException($"Could not read loop drill history.\nSQLite: {ex.Message}", ex);
+        }
+    }
+
+    // Records a Room's first loop drill. Later drills change nothing, and do not even take a write lock.
+    // Returns true when this drill was the Room's first.
+    public bool RecordFirstLoopDrill(string databasePath, long roomId, DateTimeOffset startedAt)
+    {
+        using var connection = Open(databasePath, SqliteOpenMode.ReadWrite);
+        try
+        {
+            if (TableExists(connection, LoopDrillTable))
+            {
+                using var exists = connection.CreateCommand();
+                exists.CommandText = "SELECT 1 FROM FirstLoopDrills WHERE RoomId = $room";
+                exists.Parameters.AddWithValue("$room", roomId);
+                if (exists.ExecuteScalar() is not null) return false;
+            }
+            using var transaction = connection.BeginTransaction(deferred: false);
+            using (var create = connection.CreateCommand())
+            {
+                create.Transaction = transaction;
+                create.CommandText = CreateLoopDrillSql;
+                create.ExecuteNonQuery();
+            }
+            using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = "INSERT OR IGNORE INTO FirstLoopDrills (RoomId, StartedAt) VALUES ($room, $started)";
+            insert.Parameters.AddWithValue("$room", roomId);
+            insert.Parameters.AddWithValue("$started", startedAt.ToString("o", CultureInfo.InvariantCulture));
+            var first = insert.ExecuteNonQuery() == 1;
+            transaction.Commit();
+            return first;
+        }
+        catch (SqliteException ex)
+        {
+            throw new ViewerException($"Could not record the loop drill.\nSQLite: {ex.Message}", ex);
+        }
+    }
+
+    private static bool TableExists(SqliteConnection connection, string table)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = $name";
+        command.Parameters.AddWithValue("$name", table);
+        return command.ExecuteScalar() is not null;
     }
 
     private static bool HasLocusIds(SqliteConnection connection, SqliteTransaction? transaction)

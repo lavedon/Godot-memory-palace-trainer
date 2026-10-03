@@ -28,6 +28,8 @@ public partial class RoomViewer : Node3D
     private DateTimeOffset _rehearsalStarted;
     private double _rehearsalSeconds;
     private IReadOnlyList<RehearsalRun> _history = [];
+    // Each Room's first loop drill: when its learning clock started.
+    private IReadOnlyDictionary<long, DateTimeOffset> _learningStarts = new Dictionary<long, DateTimeOffset>();
     // The Room's fastest run; its splits are the ghost to beat.
     private RehearsalRun? _ghost;
     private string _feedback = "";
@@ -183,7 +185,7 @@ public partial class RoomViewer : Node3D
         {
             if (mouseButton.ButtonIndex == MouseButton.Left)
             {
-                Input.MouseMode = Input.MouseModeEnum.Captured;
+                Player.CaptureMouse();
                 ToggleFocusedText();
                 GetViewport().SetInputAsHandled();
             }
@@ -214,7 +216,7 @@ public partial class RoomViewer : Node3D
         Hud.RefreshKeys();
         if (Menu.IsOpen) return;
         Player.Enabled = _loaded;
-        if (_loaded && DisplayServer.GetName() != "headless") Input.MouseMode = Input.MouseModeEnum.Captured;
+        if (_loaded && DisplayServer.GetName() != "headless") Player.CaptureMouse();
     }
 
     public void OpenMenu()
@@ -231,7 +233,7 @@ public partial class RoomViewer : Node3D
         Menu.Close();
         Hud.SetErrorVisible(true);
         Player.Enabled = _loaded;
-        if (_loaded && DisplayServer.GetName() != "headless") Input.MouseMode = Input.MouseModeEnum.Captured;
+        if (_loaded && DisplayServer.GetName() != "headless") Player.CaptureMouse();
     }
 
     // Rebuilds the scene for the chosen Room. CLI image overrides applied only to the starting Room.
@@ -247,7 +249,7 @@ public partial class RoomViewer : Node3D
     {
         if (@event is InputEventMouseButton { Pressed: true } button)
         {
-            if (button.ButtonIndex == MouseButton.Left) Input.MouseMode = Input.MouseModeEnum.Captured;
+            if (button.ButtonIndex == MouseButton.Left) Player.CaptureMouse();
             return button.ButtonIndex is MouseButton.Left or MouseButton.Right;
         }
         if (@event is not InputEventKey { Pressed: true, Echo: false } key) return false;
@@ -272,6 +274,12 @@ public partial class RoomViewer : Node3D
         catch (ViewerException ex)
         {
             _history = [];
+            GD.PrintErr(ex.Message);
+        }
+        try { _learningStarts = new RehearsalStore().LoadFirstLoopDrills(ProgressDatabasePath); }
+        catch (ViewerException ex)
+        {
+            _learningStarts = new Dictionary<long, DateTimeOffset>();
             GD.PrintErr(ex.Message);
         }
         _ghost = new RoomProgress(Room.Id, _history.Where(r => r.RoomId == Room.Id).ToArray()).Fastest;
@@ -339,7 +347,7 @@ public partial class RoomViewer : Node3D
             error = ex.Message.Replace('\n', ' ');
             GD.PrintErr(ex.Message);
         }
-        LastOutcome = RehearsalOutcome.Create(_history, run, DateOnly.FromDateTime(DateTime.Now), error);
+        LastOutcome = RehearsalOutcome.Create(_history, run, DateOnly.FromDateTime(DateTime.Now), error, _learningStarts);
         Hud.ShowRehearsalResult(LastOutcome);
         _sounds.Play(LastOutcome.Celebrate ? RehearsalSound.Record : RehearsalSound.Clear);
         if (LastOutcome.Celebrate) Hud.Celebrate();
@@ -383,7 +391,7 @@ public partial class RoomViewer : Node3D
     {
         Hud.HideDrillPrompt();
         Player.Enabled = true;
-        if (DisplayServer.GetName() != "headless") Input.MouseMode = Input.MouseModeEnum.Captured;
+        if (DisplayServer.GetName() != "headless") Player.CaptureMouse();
     }
 
     // Starts looping the populated Positions in range; an empty or invalid range keeps the prompt open.
@@ -402,13 +410,29 @@ public partial class RoomViewer : Node3D
             Hud.ShowDrillPrompt(range, ex.Message);
             return;
         }
-        _feedback = "";
+        _feedback = StartLearningClock();
         foreach (var display in Displays)
         {
             display.Billboard.Visible = false;
             display.SetCue(MarkerCue.Normal);
         }
         ShowDrillStep();
+    }
+
+    // A Room's first loop drill starts its learning clock, which stops at its first flawless
+    // rehearsal of all 26 Positions. Returns feedback for the drill panel.
+    private string StartLearningClock()
+    {
+        try
+        {
+            return new RehearsalStore().RecordFirstLoopDrill(ProgressDatabasePath, Room!.Id, DateTimeOffset.Now)
+                ? "[color=#f1d39b]Learning clock started[/color]   [color=#93a7ac]it stops at your first flawless rehearsal of all 26[/color]" : "";
+        }
+        catch (ViewerException ex)
+        {
+            GD.PrintErr(ex.Message);
+            return $"[color=#edbf7f]Learning clock not saved: {ex.Message.Replace('\n', ' ').Replace("[", "[lb]")}[/color]";
+        }
     }
 
     public void StopDrill()
@@ -429,7 +453,7 @@ public partial class RoomViewer : Node3D
     {
         if (@event is InputEventMouseButton { Pressed: true } button)
         {
-            if (button.ButtonIndex == MouseButton.Left) Input.MouseMode = Input.MouseModeEnum.Captured;
+            if (button.ButtonIndex == MouseButton.Left) Player.CaptureMouse();
             return button.ButtonIndex is MouseButton.Left or MouseButton.Right;
         }
         if (@event is not InputEventKey { Pressed: true, Echo: false } key) return false;

@@ -13,6 +13,11 @@ public partial class WalkingCamera : CharacterBody3D
     private float _yawFrom, _yawTo, _pitchFrom, _pitchTo, _guideSeconds;
     private float _guideTime = -1;
     public bool Guiding => _guideTime >= 0;
+    // Capturing the mouse re-centres the cursor, which arrives as one mouse motion. That motion
+    // must not count as looking: it would cancel the glide that usually starts at the same moment.
+    private const ulong CaptureSettleMs = 200;
+    private ulong _ignoreMotionUntilMs;
+    public bool SettlingCapture => Time.GetTicksMsec() < _ignoreMotionUntilMs;
 
     public override void _Ready()
     {
@@ -30,11 +35,15 @@ public partial class WalkingCamera : CharacterBody3D
     public override void _UnhandledInput(InputEvent @event)
     {
         if (!Enabled || Input.MouseMode != Input.MouseModeEnum.Captured) return;
-        if (@event is InputEventMouseMotion motion)
-        {
-            CancelGuide();
-            Look(motion.ScreenRelative);
-        }
+        if (@event is InputEventMouseMotion motion) MouseLook(motion.ScreenRelative);
+    }
+
+    // Looking with the mouse takes over from a guided glide, except for the re-centring motion just after capture.
+    public void MouseLook(Vector2 delta)
+    {
+        if (SettlingCapture) return;
+        CancelGuide();
+        Look(delta);
     }
 
     public void Look(Vector2 delta)
@@ -68,6 +77,12 @@ public partial class WalkingCamera : CharacterBody3D
     }
 
     public void CancelGuide() => _guideTime = -1;
+
+    public void CaptureMouse()
+    {
+        _ignoreMotionUntilMs = Time.GetTicksMsec() + CaptureSettleMs;
+        Input.MouseMode = Input.MouseModeEnum.Captured;
+    }
 
     public override void _Process(double delta)
     {

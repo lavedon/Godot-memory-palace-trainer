@@ -28,7 +28,13 @@ try {
     $imagesDatabase = Join-Path $fixtures 'room-images.db'
     $imagesHash = (Get-FileHash -LiteralPath $imagesDatabase).Hash
     $sharedDatabase = 'C:\tools\Data\palace.db'
-    $sharedHash = if (Test-Path -LiteralPath $sharedDatabase) { (Get-FileHash -LiteralPath $sharedDatabase).Hash } else { $null }
+    # Get-FileHash refuses files another program has open for writing (an open sqlite3 session,
+    # for example), so the shared database is read while allowing writers. A real write still changes the hash.
+    function Get-SharedHash([string]$Path) {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try { [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)) } finally { $stream.Dispose() }
+    }
+    $sharedHash = if (Test-Path -LiteralPath $sharedDatabase) { Get-SharedHash $sharedDatabase } else { $null }
     $summaries = [Collections.Generic.List[object]]::new()
     function Invoke-Case([string]$Name, [string[]]$UserArguments, [bool]$Loaded, [int]$Count = 0, [int]$Warnings = 0, [string]$ErrorContains = '', [hashtable]$Textures = @{}, [int]$TextureWarningCount = 0) {
         $destination = Join-Path $outputRoot $Name
@@ -95,7 +101,7 @@ try {
     if ($sharedHash) {
         Invoke-Case 'shared-room8' @('--room','8') $true 26 0
         Invoke-Case 'shared-room7' @('--room','7') $true 26 3
-        if ((Get-FileHash -LiteralPath $sharedDatabase).Hash -ne $sharedHash) { throw 'Shared database bytes changed during verification.' }
+        if ((Get-SharedHash $sharedDatabase) -ne $sharedHash) { throw 'Shared database bytes changed during verification.' }
     }
     $walls = Join-Path $fixtures 'wall images'
     $expectedWalls = @{}

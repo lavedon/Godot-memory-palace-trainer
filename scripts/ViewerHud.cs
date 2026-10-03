@@ -312,6 +312,12 @@ public partial class ViewerHud : CanvasLayer
         Set(_rehearsalTarget, $"{run.Medal.ToString().ToUpperInvariant()}   ·   {RehearsalScoring.FormatTime(run.DurationMs)}");
         _rehearsalTarget.AddThemeColorOverride("font_color", MedalColor(run.Medal));
         var lines = new List<string>();
+        if (outcome.JustLearned is { } learned)
+            lines.Add("[color=#f1d39b][b]ROOM LEARNED[/b][/color]   " + (learned.Duration is { } took
+                ? $"in [b]{RoomLearning.Format(took)}[/b] since your first loop drill here" + (outcome.FastestLearnedBefore is not { } fastest ? ""
+                    : took < fastest ? $"   [color=#f1d39b]FASTEST YET[/color]   (was {RoomLearning.Format(fastest)})"
+                    : $"   [color=#93a7ac]fastest Room {RoomLearning.Format(fastest)}[/color]")
+                : "[color=#93a7ac]All 26 flawless. No loop drill was recorded here first, so there is no learning time.[/color]"));
         if (outcome.FirstClear) lines.Add("[color=#f1d39b]FIRST CLEAR[/color]   This is your time to beat.");
         else if (outcome.NewBestTime)
             lines.Add($"[color=#f1d39b][b]NEW PERSONAL BEST[/b][/color]   [color=#88d8c4]{RehearsalScoring.FormatDelta(run.DurationMs - outcome.PreviousBestMs!.Value)}[/color]   (was {RehearsalScoring.FormatTime(outcome.PreviousBestMs.Value)})");

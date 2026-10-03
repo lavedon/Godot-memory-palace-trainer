@@ -83,9 +83,9 @@ Room's personal bests.
 
 Each completed rehearsal adds one row to the `RehearsalRuns` table in the database it
 was loaded from. The viewer creates this table the first time you finish a rehearsal
-(`CREATE TABLE IF NOT EXISTS`). This is the viewer's only write: loading Rooms stays
-read-only, and no other table is ever changed. Rows hold the Room, start and end
-times, duration, medal, score, best combo, and JSON columns for Positions, misses by
+(`CREATE TABLE IF NOT EXISTS`). This and `FirstLoopDrills` (see [Learning time](#learning-time))
+are the viewer's only writes: loading Rooms stays read-only, and no other table is ever
+changed. Rows hold the Room, start and end times, duration, medal, score, best combo, and JSON columns for Positions, misses by
 round, first-pass splits, first-pass missed Locus IDs, and every Locus ID in Position
 order (`LocusIds`). A `RehearsalRuns` table created by an earlier version gains the
 nullable `LocusIds` column on its next save; older rows keep `NULL` there. If saving fails, for example
@@ -125,8 +125,41 @@ in order, with the text hidden: **Space** or **H** reveals, **J** = knew it, **K
 the last Position it goes straight back to the first and keeps looping the same set,
 misses and all, until you press **Q**. Press **/** (or **T**) mid-drill to switch to a new range. The panel shows the lap number, this lap's
 known/missed counts, last lap's score, and your current streak. Loop drills are practice
-only: they are untimed and are not saved to `RehearsalRuns`. The last range you typed is
-offered the next time you press **/**.
+only: they are untimed and are not saved to `RehearsalRuns`. The only thing recorded is a
+Room's first loop drill, which starts its [learning time](#learning-time). The last range
+you typed is offered the next time you press **/**.
+
+## Learning time
+
+How long did a Room take to learn? The clock starts the first time you start a loop drill
+in that Room (the panel says **Learning clock started**). It stops at the first rehearsal
+that walks all 26 Positions without a first-pass miss, which is the run that would earn
+*Full House*. That result card shows **ROOM LEARNED in 2 d 3 h**, and says whether this
+is your fastest Room yet. Learning a Room also sets off confetti.
+
+- The Palace menu's Room details show **LEARNING** with the time so far, or **LEARNED**
+  with the final time. The stats line counts the Rooms you have learned.
+- It is the calendar time between the two moments, nights included, not time spent
+  drilling.
+- A Room counts as learned only with all 26 Positions populated.
+- A Room already learned before its first recorded loop drill shows **LEARNED** without a
+  time. Loop drills from versions without this feature were not recorded, so a Room's clock
+  starts at its next loop drill.
+
+Only the start is stored: one row per Room in `FirstLoopDrills` (`RoomId`, `StartedAt`),
+created on the first loop drill. Later drills never change it. To restart a Room's clock,
+delete its row. The finish comes from `RehearsalRuns`. The viewer does not use the
+`RoomLearningSessions` table that other tools maintain.
+
+```sql
+-- HoursToLearn is NULL while still learning, and 0 or less if the Room was learned before the clock started.
+SELECT f.RoomId, f.StartedAt,
+       ROUND((MIN(julianday(r.CompletedAt)) - julianday(f.StartedAt)) * 24, 1) AS HoursToLearn
+FROM FirstLoopDrills f
+LEFT JOIN RehearsalRuns r
+  ON r.RoomId = f.RoomId AND r.LociCount >= 26 AND r.FirstPassKnown = r.LociCount
+GROUP BY f.RoomId;
+```
 
 ## Key bindings
 
@@ -163,6 +196,16 @@ choose **Load Room** to display it; the menu reloads the database each time it o
 so newly added Rooms and images appear without restarting. `--db` carries over to
 Rooms chosen in the menu; image override switches apply only to the starting Room.
 Databases without a `Palaces` table list all Rooms under one group.
+
+**Anki cards.** Each Room's details end with an **ANKI CARDS** line. When the Room is
+ready, it shows the terminal command that builds its grouped Anki cards with
+`memory-palace-cli`'s `db_to_anki_room_cloze.py` (Basic cards plus the incremental
+cumulative cloze groups), and **Copy Anki command** puts it on the clipboard. The viewer
+never runs it: paste it into a terminal with Anki (and AnkiConnect) open. Rerunning is
+safe because the script skips cards it already made. A Room is ready when it belongs to
+a Palace, has Loci, is linked into the Palace's Room order (`Rooms.PreviousId`), and its
+`Rooms.RoomImage` is a full path to a file that exists. These are the rules the script
+uses itself; otherwise the line says which one is missing.
 
 The wall marked **FRONT** (teal by default) is the bottom of the original diagrams. The room plan
 keeps this orientation while you turn. Aim near a populated Position with text

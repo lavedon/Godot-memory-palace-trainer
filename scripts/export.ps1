@@ -49,6 +49,8 @@ R: rehearse the Room in order. Space or H reveals; J = knew it, K = missed
 loops those Positions over and over (same keys) until Q. / mid-drill picks a new range.
 Review next (Palace menu): FSRS ranks Rooms by how many Loci you have likely
 forgotten, from your rehearsal first passes. In a Room, / then TAB loops its weak spots.
+Palace menu, Copy Anki command: copies the command that builds the selected Room's
+grouped Anki cards (needs memory-palace-cli and Anki open; the viewer never runs it).
 F1 (or Keys in the Palace menu): change any key. Saved to keybindings.cfg in
 %APPDATA%\Godot\app_userdata\Palace Room Viewer\. The keys above are the defaults.
 Each rehearsal is timed and scored: beat your best time, chase medals

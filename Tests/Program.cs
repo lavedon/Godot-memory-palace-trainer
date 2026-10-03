@@ -221,6 +221,39 @@ Test("Catalog groups Rooms by Palace and reports image files", () =>
     Check(pictured.Images.Single(i => i.Wall == RoomWall.Floor).State == SurfaceImageState.None, "blank path means no image");
     Check(pictured.ImageSummary == "1/6 images · 1 missing" && catalog[1].Rooms.Count == 0, "summary");
 });
+Test("Anki card command follows the card script's rules", () =>
+{
+    var database = Path.Combine(directory, "anki palaces.db");
+    var image = Path.Combine(directory, "room image.png");
+    File.WriteAllBytes(image, [1]);
+    using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database, Pooling = false }.ToString()))
+    {
+        connection.Open();
+        Execute(connection, $"""
+            CREATE TABLE Palaces (Id INTEGER PRIMARY KEY, Name TEXT NOT NULL, Description TEXT);
+            CREATE TABLE Rooms (Id INTEGER PRIMARY KEY, PalaceId INTEGER, Title TEXT NOT NULL, PreviousId INTEGER, RoomImage TEXT);
+            CREATE TABLE Loci (Id INTEGER PRIMARY KEY, RoomId INTEGER, Position INTEGER, Text TEXT);
+            INSERT INTO Palaces VALUES (3, 'Okta', NULL);
+            INSERT INTO Rooms VALUES (10, 3, 'Ready', NULL, '{image}'), (11, 3, 'Missing file', 10, '{Path.Combine(directory, "gone.png")}'),
+              (12, 3, 'Relative', 11, 'room image.png'), (13, 3, 'Unlinked', 999, '{image}'), (14, 3, 'Empty', 12, '{image}'),
+              (15, NULL, 'No Palace', NULL, '{image}'), (16, 3, 'No image', 10, '  ');
+            INSERT INTO Loci VALUES (1, 10, 1, 'a'), (2, 11, 1, 'b'), (3, 12, 1, 'c'), (4, 13, 1, 'd'), (5, 15, 1, 'e'), (6, 16, 1, 'f');
+            """);
+    }
+    var catalog = new PalaceCatalog().Load(database);
+    AnkiCardCommand For(long id)
+    {
+        var palace = catalog.First(p => p.Rooms.Any(r => r.Id == id));
+        return AnkiCards.For(palace, palace.Rooms.Single(r => r.Id == id), database, script: Path.Combine(directory, "absent.py"));
+    }
+    var ready = For(10);
+    Check(ready.Ready && !ready.ScriptFound && ready.Command == $"python \"{Path.Combine(directory, "absent.py")}\" --db \"{database}\" --palace 3 --rooms 10", "ready command");
+    Check(!For(11).Ready && For(11).Status.Contains("missing") && For(11).Command is null, "missing image file");
+    Check(For(12).Status.Contains("relative") && For(13).Status.Contains("PreviousId") && For(14).Status.Contains("no Loci"), "relative, unlinked, empty");
+    Check(For(15).Status.Contains("not in a Palace") && For(16).Status.Contains("no room image"), "no palace, no image");
+    var legacy = new PalaceCatalog().Load(fixture).Single();
+    Check(!AnkiCards.For(legacy, legacy.Rooms[0], fixture).Ready, "databases without Palaces are never ready");
+});
 Test("Catalog reports a missing database", () => Fails(() => new PalaceCatalog().Load(Path.Combine(directory, "absent.db")), "does not exist"));
 
 Test("Rehearsal walks Positions in order once each", () =>
@@ -385,6 +418,36 @@ Test("Outcome compares a run with the Room's history", () =>
     var slower = RehearsalOutcome.Create(history, Run(8, 5, 70_000, [1], score: 100), new DateOnly(2026, 9, 5));
     Check(!slower.NewBestTime && !slower.NewBestMedal && !slower.Celebrate, "no celebration for a slower run");
 });
+Test("Learning time runs from the first loop drill to a flawless 26-Locus rehearsal", () =>
+{
+    var runs = new[]
+    {
+        Run(8, 1, 9_000, []), Run(8, 2, 90_000, [4], loci: 26), Run(8, 3, 80_000, [], loci: 26), Run(8, 4, 70_000, [], loci: 26),
+        Run(9, 1, 50_000, [], loci: 26), Run(11, 2, 50_000, [], loci: 26),
+    };
+    var starts = new Dictionary<long, DateTimeOffset> { [8] = At(1, 9), [10] = At(2), [11] = At(3) };
+    var learning = RoomLearning.ByRoom(starts, runs);
+    Check(learning[8].LearnedBy == runs[2] && learning[8].Duration == TimeSpan.FromHours(51), "a short Room, then a miss, do not count; the first flawless full walk does");
+    Check(learning[9] is { Learned: true, StartedAt: null, Duration: null }, "learned without a loop drill is untimed");
+    Check(learning[10] is { Learned: false, Duration: null }, "still learning");
+    Check(learning[11] is { Learned: true, Duration: null }, "learned before the first loop drill is untimed");
+    Check(learning.Count == 4 && !learning.ContainsKey(7), "only Rooms with a start or a learning run");
+    Check(RoomLearning.Format(TimeSpan.FromHours(51)) == "2 d 3 h" && RoomLearning.Format(new TimeSpan(3, 12, 30)) == "3 h 12 min" &&
+        RoomLearning.Format(TimeSpan.FromMinutes(14.5)) == "14 min" && RoomLearning.Format(TimeSpan.FromSeconds(20)) == "under a minute", "formatting");
+});
+Test("Outcome marks the rehearsal that learns a Room", () =>
+{
+    var starts = new Dictionary<long, DateTimeOffset> { [8] = At(4, 9), [9] = At(1, 10) };
+    var history = new[] { Run(9, 2, 50_000, [], loci: 26), Run(8, 4, 60_000, [3], loci: 26) };
+    var learned = RehearsalOutcome.Create(history, Run(8, 4, 70_000, [], hour: 15, loci: 26), new DateOnly(2026, 9, 4), learningStarts: starts);
+    Check(learned.JustLearned is { Duration: { } took } && took == TimeSpan.FromHours(6) && learned.FastestLearnedBefore == TimeSpan.FromHours(26) && learned.Celebrate,
+        "learned in 6 hours, faster than the 26 hours Room 9 took");
+    var again = RehearsalOutcome.Create([.. history, learned.Run], Run(8, 5, 65_000, [], loci: 26), new DateOnly(2026, 9, 5), learningStarts: starts);
+    Check(again.JustLearned is null && again.FastestLearnedBefore is null, "only the first flawless full walk learns a Room");
+    var untimed = RehearsalOutcome.Create([], Run(12, 4, 70_000, [], loci: 26), new DateOnly(2026, 9, 4));
+    Check(untimed.JustLearned is { Learned: true, Duration: null } && untimed.FastestLearnedBefore is null, "no loop drill, no learning time");
+    Check(RehearsalOutcome.Create([], Run(8, 4, 9_000, []), new DateOnly(2026, 9, 4), learningStarts: starts).JustLearned is null, "a short Room is never learned");
+});
 Test("Rehearsal store creates its table on first save only", () =>
 {
     var database = Path.Combine(directory, "rehearsal.db");
@@ -440,6 +503,26 @@ Test("Rehearsal store adds LocusIds to an older table", () =>
     var runs = store.Load(database);
     Check(runs.Count == 2 && runs[0].LocusIds is null && runs[1].LocusIds!.SequenceEqual([2001L, 2010L, 2026L]), "column added and filled for new runs");
 });
+Test("Loop drill store keeps each Room's first start only", () =>
+{
+    var database = Path.Combine(directory, "loop-drills.db");
+    File.Copy(fixture, database);
+    var store = new RehearsalStore();
+    byte[] Hash() => SHA256.HashData(File.ReadAllBytes(database));
+    var untouched = Hash();
+    Check(store.LoadFirstLoopDrills(database).Count == 0 && untouched.SequenceEqual(Hash()), "load without table changes nothing");
+    Check(store.RecordFirstLoopDrill(database, 8, At(1, 9)), "the first drill starts the clock");
+    var afterFirst = Hash();
+    Check(!store.RecordFirstLoopDrill(database, 8, At(2, 9)) && afterFirst.SequenceEqual(Hash()), "later drills change nothing");
+    Check(store.RecordFirstLoopDrill(database, 20, At(3)), "each Room has its own clock");
+    var starts = store.LoadFirstLoopDrills(database);
+    Check(starts.Count == 2 && starts[8] == At(1, 9) && starts[20] == At(3), "round trip");
+    Check(store.Load(database).Count == 0 && repository.Load(new(8, database)).Loci.Count == 26, "rehearsal history, Rooms and Loci unaffected");
+    using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database, Pooling = false }.ToString());
+    connection.Open();
+    Execute(connection, "INSERT INTO FirstLoopDrills VALUES (21, 'garbage')");
+    Check(store.LoadFirstLoopDrills(database).Count == 2, "malformed rows are skipped");
+});
 Test("FSRS scheduler loads from the Rust library", () =>
 {
     Check(Fsrs.Parameters.Count == 21 && Fsrs.Decay is > 0 and < 1, "default FSRS-6 parameters");
@@ -484,6 +567,7 @@ Test("Rehearsal store never creates a missing database", () =>
 {
     var absent = Path.Combine(directory, "no-rehearsals.db");
     Fails(() => new RehearsalStore().Save(absent, Run(8, 1, 1_000, [])), "does not exist");
+    Fails(() => new RehearsalStore().RecordFirstLoopDrill(absent, 8, At(1)), "does not exist");
     Check(!File.Exists(absent), "must not create");
 });
 
