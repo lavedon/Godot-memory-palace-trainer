@@ -263,13 +263,14 @@ public partial class RoomViewer : Node3D
 
     private LocusDisplay? RehearsalDisplay => Rehearsal?.Current is { } position ? Displays[position - 1] : null;
 
-    public void StartRehearsal()
+    // feedback is BBCode shown until the first answer.
+    public void StartRehearsal(string feedback = "")
     {
         Rehearsal = new RehearsalSession(Room!.Loci.Keys);
         LastOutcome = null;
         _rehearsalStarted = DateTimeOffset.Now;
         _rehearsalSeconds = 0;
-        _feedback = "";
+        _feedback = feedback;
         try { _history = new RehearsalStore().Load(ProgressDatabasePath); }
         catch (ViewerException ex)
         {
@@ -347,10 +348,22 @@ public partial class RoomViewer : Node3D
             error = ex.Message.Replace('\n', ' ');
             GD.PrintErr(ex.Message);
         }
-        LastOutcome = RehearsalOutcome.Create(_history, run, DateOnly.FromDateTime(DateTime.Now), error, _learningStarts);
+        // Only a flawless run can learn the Room, and only then are other Rooms' learning times compared.
+        LastOutcome = RehearsalOutcome.Create(_history, run, DateOnly.FromDateTime(DateTime.Now), error, _learningStarts, run.Perfect ? RoomLoci() : null);
         Hud.ShowRehearsalResult(LastOutcome);
         _sounds.Play(LastOutcome.Celebrate ? RehearsalSound.Record : RehearsalSound.Clear);
         if (LastOutcome.Celebrate) Hud.Celebrate();
+    }
+
+    // Every Room's Positions, so learning times are judged as the Palace menu judges them.
+    private IReadOnlyDictionary<long, IReadOnlyDictionary<int, long>>? RoomLoci()
+    {
+        try { return new PalaceCatalog().Load(DatabasePath).SelectMany(p => p.Rooms).GroupBy(r => r.Id).ToDictionary(g => g.Key, g => g.First().LocusIds); }
+        catch (ViewerException ex)
+        {
+            GD.PrintErr(ex.Message);
+            return null;
+        }
     }
 
     private void ShowRehearsalStep()
@@ -394,22 +407,29 @@ public partial class RoomViewer : Node3D
         if (DisplayServer.GetName() != "headless") Player.CaptureMouse();
     }
 
-    // Starts looping the populated Positions in range; an empty or invalid range keeps the prompt open.
+    // Starts looping the populated Positions in range, or a build-up ("b", "b 18") over the whole Room.
+    // An empty or invalid range keeps the prompt open.
     public void StartDrill(string range)
     {
+        LoopDrill drill;
         try
         {
-            var positions = LoopDrill.ParseRange(range).Where(Room!.Loci.ContainsKey).ToArray();
-            if (positions.Length == 0) throw new ViewerException($"No populated Positions in {range.Trim()}.");
-            s_drillRange = range.Trim();
-            CloseDrillPrompt();
-            Drill = new LoopDrill(positions);
+            if (LoopDrill.TryParseBuildUp(range, out var from)) drill = LoopDrill.BuildUpFrom(Room!.Loci.Keys, from);
+            else
+            {
+                var positions = LoopDrill.ParseRange(range).Where(Room!.Loci.ContainsKey).ToArray();
+                if (positions.Length == 0) throw new ViewerException($"No populated Positions in {range.Trim()}.");
+                drill = new LoopDrill(positions);
+            }
         }
         catch (ViewerException ex)
         {
             Hud.ShowDrillPrompt(range, ex.Message);
             return;
         }
+        s_drillRange = range.Trim();
+        CloseDrillPrompt();
+        Drill = drill;
         _feedback = StartLearningClock();
         foreach (var display in Displays)
         {
@@ -420,13 +440,13 @@ public partial class RoomViewer : Node3D
     }
 
     // A Room's first loop drill starts its learning clock, which stops at its first flawless
-    // rehearsal of all 26 Positions. Returns feedback for the drill panel.
+    // rehearsal of all its Loci. Returns feedback for the drill panel.
     private string StartLearningClock()
     {
         try
         {
             return new RehearsalStore().RecordFirstLoopDrill(ProgressDatabasePath, Room!.Id, DateTimeOffset.Now)
-                ? "[color=#f1d39b]Learning clock started[/color]   [color=#93a7ac]it stops at your first flawless rehearsal of all 26[/color]" : "";
+                ? "[color=#f1d39b]Learning clock started[/color]   [color=#93a7ac]it stops at your first flawless rehearsal of every Locus[/color]" : "";
         }
         catch (ViewerException ex)
         {
@@ -437,6 +457,8 @@ public partial class RoomViewer : Node3D
 
     public void StopDrill()
     {
+        // The prompt then offers to resume an unfinished build-up where it stopped.
+        if (Drill is { IsBuildUp: true, Complete: false } buildUp) s_drillRange = $"b {buildUp.Positions[0]}";
         Drill = null;
         Player.CancelGuide();
         foreach (var display in Displays)
@@ -484,10 +506,27 @@ public partial class RoomViewer : Node3D
         display.Billboard.Visible = false;
         display.SetCue(knew ? MarkerCue.Known : MarkerCue.Missed);
         Hud.ShowReading(null);
-        _sounds.Play(lapDone && Drill.PreviousLapKnown == Drill.Positions.Count ? RehearsalSound.Clear : knew ? RehearsalSound.Knew : RehearsalSound.Missed, Drill.Streak);
+        if (Drill.Complete)
+        {
+            FinishBuildUp();
+            return;
+        }
+        var grew = Drill.Added is not null;
+        _sounds.Play(grew ? RehearsalSound.Record : lapDone && Drill.PreviousLapKnown == Drill.Positions.Count ? RehearsalSound.Clear
+            : knew ? RehearsalSound.Knew : RehearsalSound.Missed, Drill.Streak);
         _feedback = knew ? "[color=#88d8c4]knew it[/color]" : "[color=#ee8a6b]miss[/color]";
-        if (lapDone) _feedback += $"   [color=#f1d39b]lap {Drill.Lap - 1} done · {Drill.PreviousLapKnown}/{Drill.Positions.Count}[/color]";
+        if (Drill.Added is { } added) _feedback += $"   [color=#f1d39b][b]{LoopDrill.CleanLapsToGrow} clean laps · added Position {added:00}[/b][/color]";
+        else if (lapDone) _feedback += $"   [color=#f1d39b]lap {Drill.Lap - 1} done · {Drill.PreviousLapKnown}/{Drill.Positions.Count}[/color]";
         ShowDrillStep();
+    }
+
+    // A build-up that holds every Locus for its clean laps turns into the Room's rehearsal.
+    private void FinishBuildUp()
+    {
+        Drill = null;
+        _sounds.Play(RehearsalSound.Record);
+        StartRehearsal($"[color=#f1d39b][b]Built up all {Room!.Loci.Count}.[/b][/color]   [color=#93a7ac]Now the timed rehearsal.[/color]");
+        Hud.Celebrate();
     }
 
     private void ShowDrillStep()

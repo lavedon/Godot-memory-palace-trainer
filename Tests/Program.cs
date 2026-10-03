@@ -418,20 +418,24 @@ Test("Outcome compares a run with the Room's history", () =>
     var slower = RehearsalOutcome.Create(history, Run(8, 5, 70_000, [1], score: 100), new DateOnly(2026, 9, 5));
     Check(!slower.NewBestTime && !slower.NewBestMedal && !slower.Celebrate, "no celebration for a slower run");
 });
-Test("Learning time runs from the first loop drill to a flawless 26-Locus rehearsal", () =>
+Test("Learning time runs from the first loop drill to a flawless rehearsal of every Locus", () =>
 {
     var runs = new[]
     {
         Run(8, 1, 9_000, []), Run(8, 2, 90_000, [4], loci: 26), Run(8, 3, 80_000, [], loci: 26), Run(8, 4, 70_000, [], loci: 26),
-        Run(9, 1, 50_000, [], loci: 26), Run(11, 2, 50_000, [], loci: 26),
+        Run(9, 1, 50_000, [], loci: 26), Run(11, 2, 50_000, [], loci: 26), Run(12, 2, 20_000, []),
     };
-    var starts = new Dictionary<long, DateTimeOffset> { [8] = At(1, 9), [10] = At(2), [11] = At(3) };
-    var learning = RoomLearning.ByRoom(starts, runs);
-    Check(learning[8].LearnedBy == runs[2] && learning[8].Duration == TimeSpan.FromHours(51), "a short Room, then a miss, do not count; the first flawless full walk does");
+    var starts = new Dictionary<long, DateTimeOffset> { [8] = At(1, 9), [10] = At(2), [11] = At(3), [12] = At(1, 12) };
+    IReadOnlyDictionary<int, long> Positions(int count) => Enumerable.Range(1, count).ToDictionary(p => p, p => (long)p);
+    var loci = new Dictionary<long, IReadOnlyDictionary<int, long>> { [8] = Positions(26), [9] = Positions(26), [11] = Positions(26), [12] = Positions(3) };
+    var learning = RoomLearning.ByRoom(starts, runs, loci);
+    Check(learning[8].LearnedBy == runs[2] && learning[8].Duration == TimeSpan.FromHours(51), "a run before Loci were added, then a miss, do not count; the first flawless walk of every Locus does");
+    Check(learning[12] is { Learned: true, Duration: { TotalHours: 24 } }, "a Room with fewer than 26 Loci is learned by a flawless walk of all of them");
     Check(learning[9] is { Learned: true, StartedAt: null, Duration: null }, "learned without a loop drill is untimed");
     Check(learning[10] is { Learned: false, Duration: null }, "still learning");
     Check(learning[11] is { Learned: true, Duration: null }, "learned before the first loop drill is untimed");
-    Check(learning.Count == 4 && !learning.ContainsKey(7), "only Rooms with a start or a learning run");
+    Check(learning.Count == 5 && !learning.ContainsKey(7), "only Rooms with a start or a learning run");
+    Check(RoomLearning.ByRoom(starts, runs)[8].LearnedBy == runs[0], "without current Loci, any flawless run counts");
     Check(RoomLearning.Format(TimeSpan.FromHours(51)) == "2 d 3 h" && RoomLearning.Format(new TimeSpan(3, 12, 30)) == "3 h 12 min" &&
         RoomLearning.Format(TimeSpan.FromMinutes(14.5)) == "14 min" && RoomLearning.Format(TimeSpan.FromSeconds(20)) == "under a minute", "formatting");
 });
@@ -446,7 +450,44 @@ Test("Outcome marks the rehearsal that learns a Room", () =>
     Check(again.JustLearned is null && again.FastestLearnedBefore is null, "only the first flawless full walk learns a Room");
     var untimed = RehearsalOutcome.Create([], Run(12, 4, 70_000, [], loci: 26), new DateOnly(2026, 9, 4));
     Check(untimed.JustLearned is { Learned: true, Duration: null } && untimed.FastestLearnedBefore is null, "no loop drill, no learning time");
-    Check(RehearsalOutcome.Create([], Run(8, 4, 9_000, []), new DateOnly(2026, 9, 4), learningStarts: starts).JustLearned is null, "a short Room is never learned");
+    Check(RehearsalOutcome.Create([], Run(8, 4, 9_000, []), new DateOnly(2026, 9, 4), learningStarts: starts).JustLearned is { Duration: { TotalHours: 3 } },
+        "a Room with 3 Loci is learned by a flawless walk of all 3");
+    var grown = RehearsalOutcome.Create([Run(8, 4, 9_000, [])], Run(8, 5, 70_000, [], loci: 26), new DateOnly(2026, 9, 5), learningStarts: starts);
+    Check(grown.JustLearned is { Learned: true }, "a Room learned before it gained Loci is learned again by a flawless walk of them all");
+});
+Test("Build-up loop grows backward after three clean laps in a row", () =>
+{
+    var drill = LoopDrill.BuildUpFrom([26, 1, 10]);
+    void Lap(params bool[] answers) { foreach (var knew in answers) { drill.Reveal(); drill.Grade(knew); } }
+    Check(drill is { IsBuildUp: true, Positions: [26], CleanLaps: 0, Current: 26 }, "starts with the last Position alone");
+    Lap(true); Lap(true); Lap(false);
+    Check(drill is { CleanLaps: 0, Positions.Count: 1, Lap: 4 }, "a missed lap resets the clean laps");
+    Lap(true); Lap(true);
+    Check(drill is { CleanLaps: 2, Added: null }, "two clean laps are not enough");
+    Lap(true);
+    Check(drill is { Positions: [10, 26], Added: 10, CleanLaps: 0, Lap: 1, PreviousLapKnown: null, Current: 10 }, "the third adds the Position before");
+    Lap(true, false); Lap(true, true); Lap(true, true);
+    Check(drill is { Positions.Count: 2, CleanLaps: 2 } && drill.Added is null, "one miss in a lap restarts the count");
+    Lap(true, true);
+    Check(drill is { Positions: [1, 10, 26], Complete: false }, "grows to the first Position");
+    Lap(true, true, true); Lap(true, true, true);
+    Check(!drill.Complete, "not complete before three clean laps of every Position");
+    Lap(true, true, true);
+    Check(drill is { Complete: true, Added: null } && !drill.Reveal(), "three clean laps of every Position complete it");
+    Check(LoopDrill.BuildUpFrom([1, 10, 26], 5).Positions.SequenceEqual([10, 26]), "b 5 starts at the first populated Position from 5 on");
+    Fails(() => LoopDrill.BuildUpFrom([1, 10], 11), "No populated Positions");
+    var plain = new LoopDrill([1]);
+    for (var i = 0; i < 5; i++) { plain.Reveal(); plain.Grade(true); }
+    Check(plain is { IsBuildUp: false, Positions.Count: 1, Complete: false, CleanLaps: 5 }, "a plain loop never grows");
+});
+Test("Loop prompt reads b as a build-up", () =>
+{
+    Check(LoopDrill.TryParseBuildUp(" b ", out var from) && from is null, "b alone");
+    Check(LoopDrill.TryParseBuildUp("B 18", out from) && from == 18 && LoopDrill.TryParseBuildUp("b18", out from) && from == 18, "b with a start");
+    Check(LoopDrill.TryParseBuildUp("build 7", out from) && from == 7, "build");
+    Check(!LoopDrill.TryParseBuildUp("1-3", out _) && !LoopDrill.TryParseBuildUp("", out _), "ranges are not build-ups");
+    Fails(() => LoopDrill.TryParseBuildUp("b 27", out _), "1–26");
+    Fails(() => LoopDrill.TryParseBuildUp("b 1-3", out _), "like b 18");
 });
 Test("Rehearsal store creates its table on first save only", () =>
 {

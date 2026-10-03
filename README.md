@@ -129,19 +129,33 @@ only: they are untimed and are not saved to `RehearsalRuns`. The only thing reco
 Room's first loop drill, which starts its [learning time](#learning-time). The last range
 you typed is offered the next time you press **/**.
 
+### Build up a Room
+
+Type **b** in the loop prompt to learn a whole Room from the end. The loop starts with
+only the Room's last Locus. After **3 clean laps in a row** (laps with no miss), it adds
+the Locus before it: 26, then 25–26, then 24–26, and so on. A lap with a miss starts the
+count again. The panel shows `CLEAN LAPS 2/3` and the Positions in the loop so far.
+
+Once the loop holds every Locus and you get 3 clean laps, the build-up turns into a timed
+rehearsal of the Room, which is saved like any other.
+
+If you stop part-way (**Q**, or **/** for a new range), the next loop prompt offers
+`b 18` (or wherever you stopped). Press **Enter** to carry on with 18–26 in the loop.
+You can type `b 18` yourself too. The resume point is remembered until the viewer closes.
+
 ## Learning time
 
 How long did a Room take to learn? The clock starts the first time you start a loop drill
 in that Room (the panel says **Learning clock started**). It stops at the first rehearsal
-that walks all 26 Positions without a first-pass miss, which is the run that would earn
-*Full House*. That result card shows **ROOM LEARNED in 2 d 3 h**, and says whether this
+that walks every Locus the Room has without a first-pass miss. That result card shows **ROOM LEARNED in 2 d 3 h**, and says whether this
 is your fastest Room yet. Learning a Room also sets off confetti.
 
 - The Palace menu's Room details show **LEARNING** with the time so far, or **LEARNED**
   with the final time. The stats line counts the Rooms you have learned.
 - It is the calendar time between the two moments, nights included, not time spent
   drilling.
-- A Room counts as learned only with all 26 Positions populated.
+- Rooms with fewer than 26 Loci count. If Loci are added later, the Room goes back to
+  **LEARNING** until a flawless rehearsal includes them all.
 - A Room already learned before its first recorded loop drill shows **LEARNED** without a
   time. Loop drills from versions without this feature were not recorded, so a Room's clock
   starts at its next loop drill.
@@ -157,7 +171,10 @@ SELECT f.RoomId, f.StartedAt,
        ROUND((MIN(julianday(r.CompletedAt)) - julianday(f.StartedAt)) * 24, 1) AS HoursToLearn
 FROM FirstLoopDrills f
 LEFT JOIN RehearsalRuns r
-  ON r.RoomId = f.RoomId AND r.LociCount >= 26 AND r.FirstPassKnown = r.LociCount
+  ON r.RoomId = f.RoomId AND r.FirstPassKnown = r.LociCount
+ AND NOT EXISTS (SELECT 1 FROM Loci l
+                 WHERE l.RoomId = f.RoomId AND typeof(l.Position) = 'integer' AND l.Position BETWEEN 1 AND 26
+                   AND l.Position NOT IN (SELECT value FROM json_each(r.Positions)))
 GROUP BY f.RoomId;
 ```
 

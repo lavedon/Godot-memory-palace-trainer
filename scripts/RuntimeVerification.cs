@@ -190,7 +190,7 @@ public static class RuntimeVerification
                     viewer.ProgressDatabasePath = progressDatabase;
                     var store = new RehearsalStore();
                     var earlierRuns = store.Load(progressDatabase).Count;
-                    var learnedEarlier = store.Load(progressDatabase).Any(r => r.RoomId == viewer.Room.Id && RoomLearning.Learns(r));
+                    var learnedEarlier = store.Load(progressDatabase).Any(r => r.RoomId == viewer.Room.Id && RoomLearning.Learns(r, viewer.Room.Loci.Keys));
                     var clockStartedEarlier = store.LoadFirstLoopDrills(progressDatabase).ContainsKey(viewer.Room.Id);
                     var markerColors = viewer.Displays.Select(d => d.Marker.Modulate).ToArray();
                     viewer.GuideSeconds = 0;
@@ -247,9 +247,9 @@ public static class RuntimeVerification
                     }
                     Check(viewer.LastOutcome is { Run.Perfect: true, SaveError: null } && viewer.Hud.RehearsalText.Contains("flawless"), "Flawless second run");
                     if (earlierRuns == 0) Check(viewer.LastOutcome!.Unlocked.Any(a => a.Id == "flawless"), "Flawless unlocks its trophy");
-                    if (populated.Length == RoomLayout.Capacity && !learnedEarlier)
-                        Check(viewer.LastOutcome!.JustLearned is { Learned: true } && viewer.Hud.RehearsalText.Contains("ROOM LEARNED"), "A flawless walk of all 26 learns the Room");
-                    else Check(viewer.LastOutcome!.JustLearned is null && !viewer.Hud.RehearsalText.Contains("ROOM LEARNED"), "Only a Room's first flawless walk of all 26 learns it");
+                    if (!learnedEarlier)
+                        Check(viewer.LastOutcome!.JustLearned is { Learned: true } && viewer.Hud.RehearsalText.Contains("ROOM LEARNED"), "A flawless walk of every Locus learns the Room");
+                    else Check(viewer.LastOutcome!.JustLearned is null && !viewer.Hud.RehearsalText.Contains("ROOM LEARNED"), "Only a Room's first flawless walk of every Locus learns it");
                     Check(store.Load(progressDatabase).Count == earlierRuns + 2, "Every completed rehearsal is saved");
                     Keypress(Key.M);
                     Check(viewer.Menu.IsOpen && viewer.Menu.Runs.Count == earlierRuns + 2 && viewer.Menu.StatsText.Contains("streak"), "Palace menu shows rehearsal stats");
@@ -308,6 +308,37 @@ public static class RuntimeVerification
                     Keypress(Key.Q);
                     Check(viewer.Drill is null && !viewer.TextVisible && !viewer.Hud.RehearsalVisible && !player.Guiding, "Q ends the loop drill");
 
+                    // Build-up: starts with the last Locus; three clean laps in a row add the one before it.
+                    void Answer(bool knew) { Keypress(Key.Space); Keypress(knew ? Key.J : Key.K); }
+                    var last = populated[^1].PositionNumber;
+                    viewer.StartDrill("b");
+                    var buildUp = viewer.Drill;
+                    Check(buildUp is { IsBuildUp: true } && buildUp.Positions.SequenceEqual([last]) && buildUp.Current == last &&
+                        viewer.Hud.RehearsalText.Contains("B U I L D   U P") && viewer.Hud.RehearsalText.Contains("CLEAN LAPS  0/3"), "b starts a build-up at the last Locus");
+                    if (populated.Length > 1)
+                    {
+                        Answer(true); Answer(true); Answer(false);
+                        Check(buildUp!.CleanLaps == 0 && buildUp.Positions.Count == 1, "A missed lap resets the clean laps");
+                        Answer(true); Answer(true); Answer(true);
+                        var grownTo = new[] { populated[^2].PositionNumber, last };
+                        Check(buildUp.Positions.SequenceEqual(grownTo) && buildUp.Current == grownTo[0] && viewer.Hud.RehearsalText.Contains("added Position"),
+                            "Three clean laps in a row add the Locus before");
+                        await Capture("build-up");
+                        Keypress(Key.Q);
+                        Check(viewer.Drill is null && !viewer.Hud.RehearsalVisible, "Q stops a build-up");
+                        Keypress(Key.T);
+                        Check(viewer.Hud.DrillPromptRange == $"b {grownTo[0]}", "The loop prompt offers to resume the build-up");
+                        Keypress(Key.Escape);
+                    }
+                    // Resuming from the first Locus holds the whole Room; three clean laps turn it into the rehearsal.
+                    viewer.StartDrill($"b {populated[0].PositionNumber}");
+                    Check(viewer.Drill is { IsBuildUp: true } whole && whole.Positions.SequenceEqual(populated.Select(d => d.PositionNumber)), "b with a start resumes from that Locus");
+                    for (var i = 0; i < LoopDrill.CleanLapsToGrow * populated.Length; i++) Answer(true);
+                    Check(viewer.Drill is null && viewer.Rehearsal is { Round: 1, IndexInRound: 0 } && viewer.Hud.RehearsalText.Contains("R E H E A R S E") &&
+                        viewer.Hud.RehearsalText.Contains("Built up all"), "A finished build-up turns into the rehearsal");
+                    Keypress(Key.Q);
+                    Check(viewer.Rehearsal is null && store.Load(progressDatabase).Count == earlierRuns + 2, "Quitting that rehearsal saves nothing");
+
                     // Regression: Enter in the loop prompt re-captures the mouse, and the re-centring motion
                     // used to cancel the glide to the first station. Uses a real glide, not an instant one.
                     viewer.GuideSeconds = .7f;
@@ -316,7 +347,10 @@ public static class RuntimeVerification
                     // Headless runs cannot capture a real mouse, so the motion goes straight to the look handler.
                     player.MouseLook(new(60, 0));
                     Check(player.Guiding && player.SettlingCapture, "Capturing the mouse does not cancel the glide to the first loop station");
-                    await viewer.ToSignal(viewer.GetTree().CreateTimer(.3), SceneTreeTimer.SignalName.Timeout);
+                    // Wait in real time: a timer counts the whole current frame, which can be long when a window
+                    // renders after many synchronous steps, and could fire before the capture has settled.
+                    var settled = Time.GetTicksMsec() + 300;
+                    while (Time.GetTicksMsec() < settled) await Frame(1);
                     player.MouseLook(new(60, 0));
                     Check(!player.Guiding, "Looking around after the capture settles still cancels the glide");
                     viewer.StopDrill();
@@ -380,7 +414,7 @@ public static class RuntimeVerification
                     var forecast = viewer.Menu.Forecasts[viewer.Room.Id];
                     Check(forecast.Due && forecast.Tested.Count == populated.Length && forecast.Tested.All(l => l.Reviews == 1), "Same-day rehearsals count once");
                     Check(viewer.Menu.StatsText.Contains("due") && viewer.Menu.DetailsText.Contains("RECALL"), "Palace menu shows due Rooms and recall");
-                    Check(viewer.Menu.DetailsText.Contains(populated.Length == RoomLayout.Capacity ? "LEARNED" : "LEARNING"), "Palace menu shows the Room's learning time");
+                    Check(viewer.Menu.DetailsText.Contains("LEARNED") && viewer.Menu.StatsText.Contains("learned"), "Palace menu shows the Room as learned");
                     viewer.Menu.ToggleReviewNext(true);
                     Check(viewer.Menu.DetailsText.Contains("Review next") && viewer.Menu.DetailsText.Contains("likely forgotten"), "Review next ranks due Rooms");
                     await Capture("review-next");

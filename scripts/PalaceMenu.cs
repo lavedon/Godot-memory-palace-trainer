@@ -32,6 +32,7 @@ public partial class PalaceMenu : CanvasLayer
     private IReadOnlyList<RehearsalRun> _runs = [];
     private IReadOnlyDictionary<long, RoomProgress> _progress = new Dictionary<long, RoomProgress>();
     private IReadOnlyDictionary<long, RoomLearning> _learning = new Dictionary<long, RoomLearning>();
+    private IReadOnlyDictionary<long, DateTimeOffset> _learningStarts = new Dictionary<long, DateTimeOffset>();
     private IReadOnlyList<PalaceSummary> _catalog = [];
     private long? _currentRoomId;
     public event Action<long>? RoomChosen;
@@ -208,6 +209,7 @@ public partial class PalaceMenu : CanvasLayer
             _details.Text = "This database has no Rooms.";
             return;
         }
+        LoadLearning();
         LoadForecasts();
         var palaceRoot = _palaces.CreateItem();
         var start = currentRoomId is { } id ? _catalog.ToList().FindIndex(p => p.Rooms.Any(r => r.Id == id)) : -1;
@@ -349,6 +351,10 @@ public partial class PalaceMenu : CanvasLayer
         _details.Text = $"{header}\n{ProgressSummary(room)}{LearningSummary(room)}{ForecastSummary(room)}{AnkiSummary(room)}[table=3]{string.Concat(cells)}[/table]";
     }
 
+    // Position → Loci.Id for every Room in the catalog.
+    private Dictionary<long, IReadOnlyDictionary<int, long>> RoomLoci() =>
+        _catalog.SelectMany(p => p.Rooms).GroupBy(r => r.Id).ToDictionary(g => g.Key, g => g.First().LocusIds);
+
     private RoomProgress? Progress(long roomId) => _progress.GetValueOrDefault(roomId);
     private RoomForecast? Forecast(long roomId) => _forecasts.GetValueOrDefault(roomId);
     private static string Percent(double value) => (value * 100).ToString("0", System.Globalization.CultureInfo.InvariantCulture) + "%";
@@ -358,8 +364,7 @@ public partial class PalaceMenu : CanvasLayer
     {
         try
         {
-            var loci = _catalog.SelectMany(p => p.Rooms).GroupBy(r => r.Id).ToDictionary(g => g.Key, g => g.First().LocusIds);
-            _forecasts = ReviewPlanner.Forecast(_runs, loci, _today);
+            _forecasts = ReviewPlanner.Forecast(_runs, RoomLoci(), _today);
             _forecastError = null;
         }
         catch (ViewerException ex)
@@ -441,39 +446,43 @@ public partial class PalaceMenu : CanvasLayer
             GD.PrintErr(ex.Message);
         }
         _progress = RoomProgress.ByRoom(_runs);
-        IReadOnlyDictionary<long, DateTimeOffset> learningStarts;
-        try { learningStarts = new RehearsalStore().LoadFirstLoopDrills(progressDatabasePath); }
+        try { _learningStarts = new RehearsalStore().LoadFirstLoopDrills(progressDatabasePath); }
         catch (Exception ex)
         {
-            learningStarts = new Dictionary<long, DateTimeOffset>();
+            _learningStarts = new Dictionary<long, DateTimeOffset>();
             GD.PrintErr(ex.Message);
         }
-        _learning = RoomLearning.ByRoom(learningStarts, _runs);
+        _learning = new Dictionary<long, RoomLearning>();
         var streak = RehearsalStreak.Days(_runs.Select(r => r.Day), DateOnly.FromDateTime(DateTime.Now));
         var trophies = Achievements.Unlocked(_runs).Count;
         var medals = _progress.Values.GroupBy(p => p.BestMedal).Where(g => g.Key >= Medal.Gold).OrderByDescending(g => g.Key)
             .Select(g => $"{g.Count()} {g.Key}");
-        var learned = _learning.Values.Count(l => l.Learned);
         _stats.Text = _runs.Count == 0 ? "No rehearsals yet. Load a Room and press R to set your first time."
             : $"Day {streak} streak   ·   {Plural(_runs.Count, "rehearsal")}   ·   {trophies} of {Achievements.All.Count} trophies" +
-              string.Concat(medals.Select(m => "   ·   " + m)) + (learned > 0 ? $"   ·   {Plural(learned, "Room")} learned" : "");
+              string.Concat(medals.Select(m => "   ·   " + m));
     }
 
-    // From the Room's first loop drill to its first flawless rehearsal of all 26 Positions.
+    // Learning needs each Room's current Loci, so it waits for the catalog.
+    private void LoadLearning()
+    {
+        _learning = RoomLearning.ByRoom(_learningStarts, _runs, RoomLoci());
+        var learned = _learning.Values.Count(l => l.Learned);
+        if (learned > 0) _stats.Text += $"   ·   {Plural(learned, "Room")} learned";
+    }
+
+    // From the Room's first loop drill to its first flawless rehearsal of all its Loci.
     private string LearningSummary(RoomSummary room)
     {
         if (_learning.GetValueOrDefault(room.Id) is not { } learning) return "";
         if (learning.LearnedBy is { } run)
             return learning.Duration is { } took
                 ? $"[color=#93a7ac]LEARNED[/color]  in [b]{RoomLearning.Format(took)}[/b]   ·   first loop drill {learning.StartedAt!.Value.LocalDateTime:MMM d}, " +
-                  $"flawless through all 26 on {run.CompletedAt.LocalDateTime:MMM d}\n"
-                : $"[color=#93a7ac]LEARNED[/color]  flawless through all 26 on {run.CompletedAt.LocalDateTime:MMM d}   ·   " +
+                  $"flawless through every Locus on {run.CompletedAt.LocalDateTime:MMM d}\n"
+                : $"[color=#93a7ac]LEARNED[/color]  flawless through every Locus on {run.CompletedAt.LocalDateTime:MMM d}   ·   " +
                   "[color=#93a7ac]untimed: no loop drill was recorded before it[/color]\n";
         var started = learning.StartedAt!.Value;
-        var populated = room.LocusIds.Count;
         return $"[color=#93a7ac]LEARNING[/color]  {RoomLearning.Format(DateTimeOffset.Now - started)} so far, since the first loop drill on {started.LocalDateTime:MMM d}   ·   " +
-            "[color=#93a7ac]learned at the first flawless rehearsal of all 26 Loci" +
-            (populated < RoomLayout.Capacity ? $"; this Room has {populated}" : "") + "[/color]\n";
+            "[color=#93a7ac]learned at the first flawless rehearsal of all its Loci[/color]\n";
     }
 
     private string ProgressSummary(RoomSummary room)

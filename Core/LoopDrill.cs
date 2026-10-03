@@ -1,18 +1,43 @@
+using System.Text.RegularExpressions;
+
 namespace PalaceRoomViewer.Core;
 
 // Repeats a chosen stretch of Positions — reveal, then grade — lap after lap until stopped.
-// Unlike a rehearsal it never finishes, never narrows to misses, and is not recorded.
+// Unlike a rehearsal it never narrows to misses and is not recorded; only a Room's first
+// loop drill is noted, to start its learning clock (RoomLearning).
+// A build-up drill starts with the last Position. Each time it has CleanLapsToGrow laps in a row
+// with no miss, it adds the Position before its first. Once it holds every Position for that
+// many clean laps it is Complete (the viewer then starts a rehearsal).
 public sealed class LoopDrill
 {
+    public const int CleanLapsToGrow = 3;
     private int _index;
 
-    public LoopDrill(IEnumerable<int> positions)
+    public LoopDrill(IEnumerable<int> positions) : this(positions.Distinct().Order().ToArray(), null) { }
+
+    private LoopDrill(IReadOnlyList<int> positions, IReadOnlyList<int>? buildUp)
     {
-        Positions = positions.Distinct().Order().ToArray();
-        if (Positions.Count == 0) throw new ArgumentException("A loop drill needs at least one Position.", nameof(positions));
+        if (positions.Count == 0) throw new ArgumentException("A loop drill needs at least one Position.", nameof(positions));
+        Positions = positions;
+        BuildUp = buildUp;
     }
 
-    public IReadOnlyList<int> Positions { get; }
+    // A build-up over the given Positions. It starts with those from `from` to the last
+    // (by default just the last), so "b 18" resumes a build-up that had reached 18.
+    public static LoopDrill BuildUpFrom(IEnumerable<int> positions, int? from = null)
+    {
+        var all = positions.Distinct().Order().ToArray();
+        if (all.Length == 0) throw new ArgumentException("A build-up needs at least one Position.", nameof(positions));
+        var start = all.Where(p => p >= (from ?? all[^1])).ToArray();
+        if (start.Length == 0) throw new ViewerException($"No populated Positions from {from} on.");
+        return new LoopDrill(start, all);
+    }
+
+    // The Positions in the loop now; a build-up adds to the front.
+    public IReadOnlyList<int> Positions { get; private set; }
+    // Every Position a build-up grows to hold; null for a plain loop.
+    public IReadOnlyList<int>? BuildUp { get; }
+    public bool IsBuildUp => BuildUp is not null;
     public int Lap { get; private set; } = 1;
     public int IndexInLap => _index;
     public int Current => Positions[_index];
@@ -21,6 +46,11 @@ public sealed class LoopDrill
     public int LapMissed { get; private set; }
     // Known count of the lap just finished; null during the first lap.
     public int? PreviousLapKnown { get; private set; }
+    // Laps in a row with no miss.
+    public int CleanLaps { get; private set; }
+    // The Position a build-up added when the last answer closed a lap; null otherwise.
+    public int? Added { get; private set; }
+    public bool Complete { get; private set; }
     public int TotalKnown { get; private set; }
     public int TotalGraded { get; private set; }
     public int Streak { get; private set; }
@@ -28,7 +58,7 @@ public sealed class LoopDrill
 
     public bool Reveal()
     {
-        if (Revealed) return false;
+        if (Revealed || Complete) return false;
         Revealed = true;
         return true;
     }
@@ -38,6 +68,7 @@ public sealed class LoopDrill
     {
         if (!Revealed) return false;
         Revealed = false;
+        Added = null;
         TotalGraded++;
         if (knew) { LapKnown++; TotalKnown++; Streak++; }
         else { LapMissed++; Streak = 0; }
@@ -46,7 +77,35 @@ public sealed class LoopDrill
         _index = 0;
         Lap++;
         PreviousLapKnown = LapKnown;
+        CleanLaps = LapMissed == 0 ? CleanLaps + 1 : 0;
         LapKnown = LapMissed = 0;
+        if (BuildUp is { } all && CleanLaps >= CleanLapsToGrow)
+        {
+            if (Positions.Count == all.Count) Complete = true;
+            else
+            {
+                // The loop is always a tail of BuildUp, so the next Position is the one before it.
+                Added = all[^(Positions.Count + 1)];
+                Positions = [Added.Value, .. Positions];
+                Lap = 1;
+                PreviousLapKnown = null;
+                CleanLaps = 0;
+            }
+        }
+        return true;
+    }
+
+    // "b" builds up from the last Position; "b 18" (or "build 18") starts with 18 to the end.
+    // Returns false when the text is not a build-up, so it can be read as a range instead.
+    public static bool TryParseBuildUp(string text, out int? from)
+    {
+        from = null;
+        var match = Regex.Match(text.Trim(), @"^b(?:uild)?(?:\s*(\S+))?$", RegexOptions.IgnoreCase);
+        if (!match.Success) return false;
+        if (!match.Groups[1].Success) return true;
+        if (!int.TryParse(match.Groups[1].Value, out var position) || position < 1 || position > RoomLayout.Capacity)
+            throw new ViewerException($"Build up from one Position 1–{RoomLayout.Capacity}, like b 18.");
+        from = position;
         return true;
     }
 

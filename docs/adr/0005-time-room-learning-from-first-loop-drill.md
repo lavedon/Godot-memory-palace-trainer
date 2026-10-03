@@ -2,7 +2,7 @@
 
 The user wanted to record how long each Room takes to learn. The clock starts the first
 time a loop drill (T or /) is run in a Room. It stops at the first rehearsal that walks
-all 26 Loci with no first-pass miss.
+every Locus the Room has with no first-pass miss.
 
 ## Only the start is stored
 
@@ -22,8 +22,8 @@ creates the table if needed and runs `INSERT OR IGNORE`. The write connection us
 `Mode=ReadWrite`, as in ADR 0003. This is the second additive table the viewer writes.
 Rooms, Loci and every other table are still never changed.
 
-The stop time is not stored. It comes from `RehearsalRuns`: the Room's earliest run with
-`Perfect` and `LociCount >= 26`, the same condition as the *Full House* trophy. Personal
+The stop time is not stored. It comes from `RehearsalRuns`: the Room's earliest `Perfect`
+run whose `Positions` include every Position the Room has now. Personal
 bests, streaks and achievements are worked out from history in the same way, and a stored
 `LearnedAt` could disagree with the runs.
 
@@ -34,8 +34,11 @@ bests, streaks and achievements are worked out from history in the same way, and
   without loop drills. The Room is shown as learned, with no time. The viewer does not use
   a later flawless run instead, because that would time a review, not the learning.
 - **No loop drill yet.** The same applies: learned with no time.
-- **Fewer than 26 Loci.** Such a Room is never learned. The user defined learned as a
-  full 26-Locus walk. The menu says how many Loci the Room has.
+- **Fewer than 26 Loci.** Such a Room can be learned: the user chose "all of the Room's
+  Loci" over a fixed 26.
+- **Loci added after learning.** The earlier flawless run no longer covers the Room, so it
+  is learning again until a flawless run includes the new Loci. The check uses Positions,
+  not Locus IDs, so tools that re-create Loci in place do not reset a Room.
 - **Loop drills from earlier versions** were not recorded. Such a Room's clock starts at
   its next drill.
 

@@ -163,6 +163,7 @@ public partial class ViewerHud : CanvasLayer
         };
         drillBox.AddChild(_drillRange);
         drillBox.AddChild(Text("e.g.  1-3   or   1-3, 7, 10-12        ENTER   Start loop        ESC   Cancel", 13, Muted));
+        drillBox.AddChild(Text($"b   Build up from the last Locus: {LoopDrill.CleanLapsToGrow} clean laps add the one before        b 18   Start at 18", 13, Muted));
         _drillWeak = Text("", 13, new Color("f1d39b"));
         drillBox.AddChild(_drillWeak);
         _drillError = Text("", 13, new Color("edbf7f"));
@@ -317,7 +318,7 @@ public partial class ViewerHud : CanvasLayer
                 ? $"in [b]{RoomLearning.Format(took)}[/b] since your first loop drill here" + (outcome.FastestLearnedBefore is not { } fastest ? ""
                     : took < fastest ? $"   [color=#f1d39b]FASTEST YET[/color]   (was {RoomLearning.Format(fastest)})"
                     : $"   [color=#93a7ac]fastest Room {RoomLearning.Format(fastest)}[/color]")
-                : "[color=#93a7ac]All 26 flawless. No loop drill was recorded here first, so there is no learning time.[/color]"));
+                : "[color=#93a7ac]Every Locus flawless. No loop drill was recorded here first, so there is no learning time.[/color]"));
         if (outcome.FirstClear) lines.Add("[color=#f1d39b]FIRST CLEAR[/color]   This is your time to beat.");
         else if (outcome.NewBestTime)
             lines.Add($"[color=#f1d39b][b]NEW PERSONAL BEST[/b][/color]   [color=#88d8c4]{RehearsalScoring.FormatDelta(run.DurationMs - outcome.PreviousBestMs!.Value)}[/color]   (was {RehearsalScoring.FormatTime(outcome.PreviousBestMs.Value)})");
@@ -382,13 +383,18 @@ public partial class ViewerHud : CanvasLayer
     public void ShowDrill(LoopDrill drill, string feedback)
     {
         _rehearsalPanel.Visible = true;
-        Set(_rehearsalTitle, $"L O O P   /   P O S I T I O N S   {LoopDrill.Describe(drill.Positions)}   ·   L A P   {drill.Lap}");
+        Set(_rehearsalTitle, drill.BuildUp is { } all
+            ? $"B U I L D   U P   /   P O S I T I O N S   {LoopDrill.Describe(drill.Positions)}   ·   {drill.Positions.Count} of {all.Count}   ·   L A P   {drill.Lap}"
+            : $"L O O P   /   P O S I T I O N S   {LoopDrill.Describe(drill.Positions)}   ·   L A P   {drill.Lap}");
         Set(_rehearsalTarget, $"Position {drill.Current:00}   ·   {RoomLayout.Description(drill.Current)}");
         _rehearsalTarget.AddThemeColorOverride("font_color", Ink);
         var previous = drill.PreviousLapKnown is { } known ? $"      [color=#93a7ac]LAST LAP[/color]  {known}/{drill.Positions.Count}" : "";
         var streak = drill.Streak >= 2 ? $"      [color=#f1d39b]STREAK ×{drill.Streak}[/color]" : "";
+        // A build-up grows after CleanLapsToGrow clean laps in a row; a miss starts the count again.
+        var clean = drill.IsBuildUp
+            ? $"[color=#93a7ac]CLEAN LAPS[/color]  [color=#{(drill.CleanLaps > 0 ? "88d8c4" : "93a7ac")}]{drill.CleanLaps}/{LoopDrill.CleanLapsToGrow}[/color]      " : "";
         SetRich(_rehearsalLive,
-            $"[color=#93a7ac]THIS LAP[/color]  {drill.LapKnown} known · {drill.LapMissed} missed{previous}{streak}\n" +
+            $"{clean}[color=#93a7ac]THIS LAP[/color]  {drill.LapKnown} known · {drill.LapMissed} missed{previous}{streak}\n" +
             $"[color=#93a7ac]{drill.IndexInLap + 1} of {drill.Positions.Count}   ·   {drill.TotalKnown} of {drill.TotalGraded} known overall[/color]      {feedback}");
         Set(_rehearsalPrompt, drill.Revealed ? GradePrompt($"{K(KeyAction.Quit)}   Stop")
             : RevealPrompt($"{K(KeyAction.Loop)}   New range        {K(KeyAction.Quit)}   Stop"));
