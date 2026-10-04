@@ -407,14 +407,14 @@ public partial class RoomViewer : Node3D
         if (DisplayServer.GetName() != "headless") Player.CaptureMouse();
     }
 
-    // Starts looping the populated Positions in range, or a build-up ("b", "b 18") over the whole Room.
+    // Starts looping the populated Positions in range, or a build-up ("b", "b 18", "b 15-18").
     // An empty or invalid range keeps the prompt open.
     public void StartDrill(string range)
     {
         LoopDrill drill;
         try
         {
-            if (LoopDrill.TryParseBuildUp(range, out var from)) drill = LoopDrill.BuildUpFrom(Room!.Loci.Keys, from);
+            if (LoopDrill.TryParseBuildUp(range, out var from, out var to)) drill = LoopDrill.BuildUpTo(Room!.Loci.Keys, to, from);
             else
             {
                 var positions = LoopDrill.ParseRange(range).Where(Room!.Loci.ContainsKey).ToArray();
@@ -458,7 +458,8 @@ public partial class RoomViewer : Node3D
     public void StopDrill()
     {
         // The prompt then offers to resume an unfinished build-up where it stopped.
-        if (Drill is { IsBuildUp: true, Complete: false } buildUp) s_drillRange = $"b {buildUp.Positions[0]}";
+        if (Drill is { IsBuildUp: true, Complete: false } buildUp)
+            s_drillRange = buildUp.Positions.Count == 1 ? $"b {buildUp.Positions[0]}" : $"b {buildUp.Positions[0]}-{buildUp.Positions[^1]}";
         Drill = null;
         Player.CancelGuide();
         foreach (var display in Displays)
@@ -520,12 +521,24 @@ public partial class RoomViewer : Node3D
         ShowDrillStep();
     }
 
-    // A build-up that holds every Locus for its clean laps turns into the Room's rehearsal.
+    // A build-up that holds the whole Room for its clean laps turns into the Room's rehearsal.
+    // One that ends before the Room's last Locus keeps looping what it built, as a plain loop.
     private void FinishBuildUp()
     {
-        Drill = null;
+        var built = Drill!.Positions;
         _sounds.Play(RehearsalSound.Record);
-        StartRehearsal($"[color=#f1d39b][b]Built up all {Room!.Loci.Count}.[/b][/color]   [color=#93a7ac]Now the timed rehearsal.[/color]");
+        if (built.Count == Room!.Loci.Count)
+        {
+            Drill = null;
+            StartRehearsal($"[color=#f1d39b][b]Built up all {Room.Loci.Count}.[/b][/color]   [color=#93a7ac]Now the timed rehearsal.[/color]");
+        }
+        else
+        {
+            Drill = new LoopDrill(built);
+            s_drillRange = LoopDrill.Describe(built).Replace('–', '-');
+            _feedback = $"[color=#f1d39b][b]Built up {LoopDrill.Describe(built)}.[/b][/color]   [color=#93a7ac]Now looping it.[/color]";
+            ShowDrillStep();
+        }
         Hud.Celebrate();
     }
 

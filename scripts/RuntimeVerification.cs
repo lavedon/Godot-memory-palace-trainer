@@ -327,12 +327,24 @@ public static class RuntimeVerification
                         Keypress(Key.Q);
                         Check(viewer.Drill is null && !viewer.Hud.RehearsalVisible, "Q stops a build-up");
                         Keypress(Key.T);
-                        Check(viewer.Hud.DrillPromptRange == $"b {grownTo[0]}", "The loop prompt offers to resume the build-up");
+                        Check(viewer.Hud.DrillPromptRange == $"b {grownTo[0]}-{last}", "The loop prompt offers to resume the build-up");
                         Keypress(Key.Escape);
                     }
-                    // Resuming from the first Locus holds the whole Room; three clean laps turn it into the rehearsal.
-                    viewer.StartDrill($"b {populated[0].PositionNumber}");
-                    Check(viewer.Drill is { IsBuildUp: true } whole && whole.Positions.SequenceEqual(populated.Select(d => d.PositionNumber)), "b with a start resumes from that Locus");
+                    if (populated.Length > 1)
+                    {
+                        // A build-up ending before the last Locus keeps looping what it built.
+                        var end = populated[^2].PositionNumber;
+                        viewer.StartDrill($"b {end}");
+                        Check(viewer.Drill is { IsBuildUp: true } partial && partial.Positions.SequenceEqual([end]), "b with a Position builds up to it");
+                        viewer.StartDrill($"b {populated[0].PositionNumber}-{end}");
+                        for (var i = 0; i < LoopDrill.CleanLapsToGrow * (populated.Length - 1); i++) Answer(true);
+                        Check(viewer.Drill is { IsBuildUp: false } built && built.Positions.SequenceEqual(populated[..^1].Select(d => d.PositionNumber)) &&
+                            viewer.Rehearsal is null && viewer.Hud.RehearsalText.Contains("Built up"), "A finished partial build-up keeps looping what it built");
+                        viewer.StopDrill();
+                    }
+                    // Resuming with the whole Room in the loop; three clean laps turn it into the rehearsal.
+                    viewer.StartDrill($"b {populated[0].PositionNumber}-{last}");
+                    Check(viewer.Drill is { IsBuildUp: true } whole && whole.Positions.SequenceEqual(populated.Select(d => d.PositionNumber)), "b with a range resumes the build-up");
                     for (var i = 0; i < LoopDrill.CleanLapsToGrow * populated.Length; i++) Answer(true);
                     Check(viewer.Drill is null && viewer.Rehearsal is { Round: 1, IndexInRound: 0 } && viewer.Hud.RehearsalText.Contains("R E H E A R S E") &&
                         viewer.Hud.RehearsalText.Contains("Built up all"), "A finished build-up turns into the rehearsal");

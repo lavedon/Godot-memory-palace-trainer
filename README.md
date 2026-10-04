@@ -139,9 +139,14 @@ count again. The panel shows `CLEAN LAPS 2/3` and the Positions in the loop so f
 Once the loop holds every Locus and you get 3 clean laps, the build-up turns into a timed
 rehearsal of the Room, which is saved like any other.
 
-If you stop part-way (**Q**, or **/** for a new range), the next loop prompt offers
-`b 18` (or wherever you stopped). Press **Enter** to carry on with 18–26 in the loop.
-You can type `b 18` yourself too. The resume point is remembered until the viewer closes.
+Type **b 18** to build up to Position 18 instead: the loop starts with 18 alone, then
+17–18, then 16–18, down to the first Locus. A build-up that ends before the Room's last
+Locus does not turn into a rehearsal when it finishes. Instead it keeps looping what it
+built (1–18) as an ordinary loop.
+
+If you stop part-way (**Q**, or **/** for a new range), the next loop prompt offers to
+resume, for example `b 15-18`: the build-up that ends at 18, with 15–18 already in the
+loop. Press **Enter** to carry on. The resume point is remembered until the viewer closes.
 
 ## Learning time
 

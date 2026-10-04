@@ -457,7 +457,7 @@ Test("Outcome marks the rehearsal that learns a Room", () =>
 });
 Test("Build-up loop grows backward after three clean laps in a row", () =>
 {
-    var drill = LoopDrill.BuildUpFrom([26, 1, 10]);
+    var drill = LoopDrill.BuildUpTo([26, 1, 10]);
     void Lap(params bool[] answers) { foreach (var knew in answers) { drill.Reveal(); drill.Grade(knew); } }
     Check(drill is { IsBuildUp: true, Positions: [26], CleanLaps: 0, Current: 26 }, "starts with the last Position alone");
     Lap(true); Lap(true); Lap(false);
@@ -474,20 +474,26 @@ Test("Build-up loop grows backward after three clean laps in a row", () =>
     Check(!drill.Complete, "not complete before three clean laps of every Position");
     Lap(true, true, true);
     Check(drill is { Complete: true, Added: null } && !drill.Reveal(), "three clean laps of every Position complete it");
-    Check(LoopDrill.BuildUpFrom([1, 10, 26], 5).Positions.SequenceEqual([10, 26]), "b 5 starts at the first populated Position from 5 on");
-    Fails(() => LoopDrill.BuildUpFrom([1, 10], 11), "No populated Positions");
+    var toEighteen = LoopDrill.BuildUpTo(Enumerable.Range(1, 26), to: 18);
+    Check(toEighteen is { Positions: [18], BuildUp.Count: 18 }, "b 18 starts with 18 alone and ends there");
+    for (var i = 0; i < 3; i++) { toEighteen.Reveal(); toEighteen.Grade(true); }
+    Check(toEighteen.Positions.SequenceEqual([17, 18]), "then 17–18");
+    Check(LoopDrill.BuildUpTo(Enumerable.Range(1, 26), to: 18, from: 15).Positions.SequenceEqual([15, 16, 17, 18]), "b 15-18 resumes with 15–18");
+    Check(LoopDrill.BuildUpTo([1, 10, 26], to: 20).Positions.SequenceEqual([10]), "the end is the last populated Position up to it");
+    Fails(() => LoopDrill.BuildUpTo([10, 26], to: 5), "No populated Positions");
     var plain = new LoopDrill([1]);
     for (var i = 0; i < 5; i++) { plain.Reveal(); plain.Grade(true); }
     Check(plain is { IsBuildUp: false, Positions.Count: 1, Complete: false, CleanLaps: 5 }, "a plain loop never grows");
 });
 Test("Loop prompt reads b as a build-up", () =>
 {
-    Check(LoopDrill.TryParseBuildUp(" b ", out var from) && from is null, "b alone");
-    Check(LoopDrill.TryParseBuildUp("B 18", out from) && from == 18 && LoopDrill.TryParseBuildUp("b18", out from) && from == 18, "b with a start");
-    Check(LoopDrill.TryParseBuildUp("build 7", out from) && from == 7, "build");
-    Check(!LoopDrill.TryParseBuildUp("1-3", out _) && !LoopDrill.TryParseBuildUp("", out _), "ranges are not build-ups");
-    Fails(() => LoopDrill.TryParseBuildUp("b 27", out _), "1–26");
-    Fails(() => LoopDrill.TryParseBuildUp("b 1-3", out _), "like b 18");
+    Check(LoopDrill.TryParseBuildUp(" b ", out var from, out var to) && from is null && to is null, "b alone");
+    Check(LoopDrill.TryParseBuildUp("B 18", out from, out to) && from is null && to == 18 && LoopDrill.TryParseBuildUp("b18", out _, out to) && to == 18, "b with an end");
+    Check(LoopDrill.TryParseBuildUp("b 15-18", out from, out to) && from == 15 && to == 18 && LoopDrill.TryParseBuildUp("build 18–15", out from, out to) && from == 15 && to == 18, "b with a resume range");
+    Check(!LoopDrill.TryParseBuildUp("1-3", out _, out _) && !LoopDrill.TryParseBuildUp("", out _, out _), "ranges are not build-ups");
+    Fails(() => LoopDrill.TryParseBuildUp("b 27", out _, out _), "1–26");
+    Fails(() => LoopDrill.TryParseBuildUp("b x", out _, out _), "like b 18");
+    Fails(() => LoopDrill.TryParseBuildUp("b 1-3-5", out _, out _), "like b 18");
 });
 Test("Rehearsal store creates its table on first save only", () =>
 {

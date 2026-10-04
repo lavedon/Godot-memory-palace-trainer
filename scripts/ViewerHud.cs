@@ -163,7 +163,7 @@ public partial class ViewerHud : CanvasLayer
         };
         drillBox.AddChild(_drillRange);
         drillBox.AddChild(Text("e.g.  1-3   or   1-3, 7, 10-12        ENTER   Start loop        ESC   Cancel", 13, Muted));
-        drillBox.AddChild(Text($"b   Build up from the last Locus: {LoopDrill.CleanLapsToGrow} clean laps add the one before        b 18   Start at 18", 13, Muted));
+        drillBox.AddChild(Text($"b   Build up from the last Locus: {LoopDrill.CleanLapsToGrow} clean laps add the one before        b 18   Build up to 18", 13, Muted));
         _drillWeak = Text("", 13, new Color("f1d39b"));
         drillBox.AddChild(_drillWeak);
         _drillError = Text("", 13, new Color("edbf7f"));
