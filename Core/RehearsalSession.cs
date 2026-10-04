@@ -10,14 +10,24 @@ public sealed class RehearsalSession
     private List<int> _round;
     private int _index;
 
-    public RehearsalSession(IEnumerable<int> positions)
+    public RehearsalSession(IEnumerable<int> positions) : this(positions.Distinct().Order().ToArray(), RehearsalRoute.Standard) { }
+
+    private RehearsalSession(IReadOnlyList<int> positions, RehearsalRoute route)
     {
-        Positions = positions.Distinct().Order().ToArray();
+        Positions = positions;
+        Route = route;
         if (Positions.Count == 0) throw new ArgumentException("A rehearsal needs at least one Position.", nameof(positions));
         _round = [.. Positions];
     }
 
+    // An advanced rehearsal walks the Room band by band (RehearsalRoutes.Order). Later rounds
+    // re-ask misses in that same route order.
+    public static RehearsalSession Advanced(IEnumerable<int> positions, RehearsalRoute route) =>
+        new(RehearsalRoutes.Order(route, positions), route);
+
+    // Positions in the order they are walked.
     public IReadOnlyList<int> Positions { get; }
+    public RehearsalRoute Route { get; }
     public int Round => _missesByRound.Count;
     public IReadOnlyList<int> RoundPositions => _round;
     public int IndexInRound => _index;
@@ -35,6 +45,21 @@ public sealed class RehearsalSession
     public int Score { get; private set; }
     public int LastPoints { get; private set; }
     public int PerfectBonus { get; private set; }
+
+    // "r 1-6" (or "rehearse 1-6, 10") rehearses just those Positions: a section rehearsal, which
+    // repeats misses like a full one but is practice only and never saved. Returns false when the
+    // text is not a section, so it can be read as a loop range instead.
+    public static bool TryParseSection(string text, out IReadOnlyList<int> positions)
+    {
+        positions = [];
+        var match = System.Text.RegularExpressions.Regex.Match(text.Trim(), @"^(?:rehearse|r)\s*(.*)$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!match.Success) return false;
+        if (!match.Groups[1].Success || match.Groups[1].Value.Trim().Length == 0)
+            throw new ViewerException("Rehearse a section with its Positions, like r 1-6. R rehearses the whole Room.");
+        positions = LoopDrill.ParseRange(match.Groups[1].Value);
+        return true;
+    }
 
     public bool Reveal()
     {

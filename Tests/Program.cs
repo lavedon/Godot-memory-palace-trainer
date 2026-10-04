@@ -325,6 +325,84 @@ Test("Key bindings round-trip and tolerate bad lines", () =>
     var partial = KeyBindings.Parse("Knew=85,0\nBogus=1,2\nMissed=abc\nQuit=4194305,0\nSound=1\n");
     Check(partial.Get(KeyAction.Knew, 0) == 'U' && partial.Matches(KeyAction.Missed, 'K') && partial.Matches(KeyAction.Quit, 'Q') && partial.Matches(KeyAction.Sound, 'V'), "bad lines keep defaults");
 });
+Test("Section rehearsals parse from the loop prompt", () =>
+{
+    Check(RehearsalSession.TryParseSection("r 1-6", out var section) && section.SequenceEqual([1, 2, 3, 4, 5, 6]) && RehearsalSession.TryParseSection("R2-3", out section) && section.SequenceEqual([2, 3]), "r range");
+    Check(RehearsalSession.TryParseSection(" Rehearse 10-12, 3 ", out section) && section.SequenceEqual([3, 10, 11, 12]), "long form and lists");
+    Check(!RehearsalSession.TryParseSection("1-3", out _) && !RehearsalSession.TryParseSection("b 18", out _), "ranges and build-ups are not sections");
+    Fails(() => RehearsalSession.TryParseSection("r", out _), "whole Room");
+    Fails(() => RehearsalSession.TryParseSection("r 0-3", out _), "outside");
+    var session = new RehearsalSession([4, 5, 6]);
+    void Answer(bool knew) { session.Reveal(); session.Grade(knew); }
+    Answer(true); Answer(false); Answer(true);
+    Check(session.Round == 2 && session.RoundPositions.SequenceEqual([5]), "a section repeats its misses");
+    Answer(true);
+    Check(session.IsComplete && session.FirstPassMisses.SequenceEqual([5]), "and clears");
+});
+Test("Advanced routes walk the walls band by band, then floor and ceiling", () =>
+{
+    var all = Enumerable.Range(1, 26).ToArray();
+    Check(RehearsalRoutes.Order(RehearsalRoute.TopFirst, all).SequenceEqual(
+        [3, 6, 9, 12, 15, 18, 21, 24, 2, 5, 8, 11, 14, 17, 20, 23, 1, 4, 7, 10, 13, 16, 19, 22, 25, 26]), "top first");
+    Check(RehearsalRoutes.Order(RehearsalRoute.BottomFirst, all).SequenceEqual(
+        [1, 4, 7, 10, 13, 16, 19, 22, 2, 5, 8, 11, 14, 17, 20, 23, 3, 6, 9, 12, 15, 18, 21, 24, 25, 26]), "bottom first");
+    Check(RehearsalRoutes.Order(RehearsalRoute.TopFirst, [26, 1, 2, 3, 10]).SequenceEqual([3, 2, 1, 10, 26]), "only populated Positions");
+    Check(RehearsalRoutes.Order(RehearsalRoute.Standard, [3, 1, 2]).SequenceEqual([1, 2, 3]), "standard is Position order");
+    var picks = Enumerable.Range(0, 200).Select(i => RehearsalRoutes.Pick(new Random(i))).ToHashSet();
+    Check(picks.SetEquals(RehearsalRoutes.Advanced), "both routes get picked");
+    var session = RehearsalSession.Advanced(all, RehearsalRoute.TopFirst);
+    Check(session.Route == RehearsalRoute.TopFirst && session.Current == 3, "starts top band");
+    foreach (var _ in all) { session.Reveal(); session.Grade(session.Current is not (3 or 1 or 25)); }
+    Check(session.Round == 2 && session.RoundPositions.SequenceEqual([3, 1, 25]), "misses come back in route order");
+});
+Test("Advanced runs keep their own bests but count everywhere else", () =>
+{
+    var top = Run(8, 2, 40_000, []) with { Route = RehearsalRoute.TopFirst };
+    var standard = Run(8, 1, 12_000, [], hour: 9);
+    Check(!RehearsalRoutes.Unlocked([Run(8, 1, 12_000, [1])]) && RehearsalRoutes.Unlocked([standard]) && standard.Medal >= Medal.Gold, "Gold unlocks");
+    var outcome = RehearsalOutcome.Create([standard], top, new DateOnly(2026, 9, 2));
+    Check(outcome.FirstClear && outcome.PreviousBestMs is null && !outcome.NewBestTime, "bests compare the same route only");
+    Check(outcome.JustLearned is null, "a Room learned by a standard run is not learned again");
+    Check(outcome.Unlocked.Any(a => a.Id == "advanced") && outcome.StreakDays == 2, "advanced trophy, streak counts both");
+    var faster = RehearsalOutcome.Create([standard, top], top with { CompletedAt = At(3), DurationMs = 35_000 }, new DateOnly(2026, 9, 3));
+    Check(faster.NewBestTime && faster.PreviousBestMs == 40_000 && faster.Unlocked.Any(a => a.Id == "personal-best"), "beats its own route's best");
+    var learnedByAdvanced = RehearsalOutcome.Create([Run(9, 1, 30_000, [1])], top with { RoomId = 9 }, new DateOnly(2026, 9, 2));
+    Check(learnedByAdvanced.JustLearned is not null, "a flawless advanced run can learn a Room");
+});
+Test("Rehearsal store records advanced routes", () =>
+{
+    var database = Path.Combine(directory, "route-rehearsal.db");
+    File.Copy(fixture, database);
+    var store = new RehearsalStore();
+    var session = RehearsalSession.Advanced(Load(20).Loci.Keys, RehearsalRoute.BottomFirst);
+    while (session.Current is not null) { session.Reveal(); session.Grade(true, 1_000); }
+    store.Save(database, RehearsalRun.From(session, Load(20), At(2), At(2).AddSeconds(3)));
+    var standard = new RehearsalSession(Load(20).Loci.Keys);
+    while (standard.Current is not null) { standard.Reveal(); standard.Grade(true, 1_000); }
+    store.Save(database, RehearsalRun.From(standard, Load(20), At(3), At(3).AddSeconds(3)));
+    var runs = store.Load(database);
+    Check(runs[0].Route == RehearsalRoute.BottomFirst && runs[0].Positions.SequenceEqual([1, 10, 26]) && runs[1].Route == RehearsalRoute.Standard, "round trip");
+    using var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = database, Pooling = false }.ToString());
+    connection.Open();
+    using (var command = connection.CreateCommand())
+    {
+        command.CommandText = "SELECT Route FROM RehearsalRuns ORDER BY Id";
+        using var reader = command.ExecuteReader();
+        Check(reader.Read() && reader.GetString(0) == "BottomFirst" && reader.Read() && reader.IsDBNull(0), "standard runs store NULL");
+    }
+    Execute(connection, "UPDATE RehearsalRuns SET Route = 'Spiral' WHERE Id = (SELECT MIN(Id) FROM RehearsalRuns)");
+    Check(store.Load(database).Count == 1, "unknown routes are skipped");
+});
+Test("A new action's default key never clashes with saved bindings", () =>
+{
+    var saved = string.Join("\n", KeyBindings.Defaults().Serialize().Split('\n').Where(l => !l.StartsWith("AdvancedRehearse")));
+    Check(KeyBindings.Parse(saved).Matches(KeyAction.AdvancedRehearse, 'G'), "added action gets its default");
+    var keys = KeyBindings.Defaults();
+    keys.Assign(KeyAction.Sound, 0, 'G');
+    var withG = string.Join("\n", keys.Serialize().Split('\n').Where(l => !l.StartsWith("AdvancedRehearse")));
+    var parsed = KeyBindings.Parse(withG);
+    Check(parsed.Matches(KeyAction.Sound, 'G') && !parsed.Matches(KeyAction.AdvancedRehearse, 'G'), "a clashing default stays unbound");
+});
 Test("Rehearsal repeats only misses until a clean round", () =>
 {
     var session = new RehearsalSession([1, 2, 3, 4]);

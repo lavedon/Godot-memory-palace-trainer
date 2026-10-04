@@ -31,6 +31,7 @@ demonstrates warnings for Positions 27–29.
 | Left-click the Room | Capture the mouse and resume walking; also toggle the Locus under the crosshair |
 | M | Open or close the Palace menu |
 | R | Start or stop a rehearsal (see below) |
+| G | Advanced rehearsal, band by band, once you have Gold in the Room (see below) |
 | / | Start a loop drill over chosen Positions (see below); T also works |
 | Q | Quit a rehearsal or loop drill |
 | V | Sound effects on or off |
@@ -52,6 +53,25 @@ cancels the glide.
 
 When the Room is clear, the result card shows your medal, time, and misses. **Space**
 starts again; **Q** (or **R**) ends the rehearsal; **M** opens the Palace menu.
+
+### Advanced rehearsal (unlocked by Gold)
+
+Once any rehearsal of a Room earns **Gold** or **Platinum**, press **G** there for an
+advanced rehearsal. Until then, **G** only says what it takes to unlock. Instead of Position order, it walks the
+walls band by band, each band in wall-slot order 1–8, and finishes with the floor (25),
+then the ceiling (26). Each run picks one of two routes at random:
+
+- **Top band first:** 3, 6 … 24 (where wall meets ceiling), then the middle band 2, 5 … 23,
+  then the bottom band 1, 4 … 22, then 25 and 26.
+- **Bottom band first:** 1, 4 … 22, then 2, 5 … 23, then 3, 6 … 24, then 25 and 26.
+
+Misses come back in later rounds exactly as in a normal rehearsal, in route order. Advanced
+runs are saved like any full rehearsal, so they count toward learning the Room, streaks,
+trophies (including **Off the Beaten Path** for a first advanced clear) and review
+forecasts. Times are only compared on the same route: each route has its own best time,
+ghost splits and "new personal best". The Palace menu's best time and medal stay those of
+Position-order rehearsals, with an **ADVANCED** line showing each route's best. **Space**
+on the result card goes again on a freshly picked route.
 
 ### Beat your time
 
@@ -88,7 +108,9 @@ are the viewer's only writes: loading Rooms stays read-only, and no other table 
 changed. Rows hold the Room, start and end times, duration, medal, score, best combo, and JSON columns for Positions, misses by
 round, first-pass splits, first-pass missed Locus IDs, and every Locus ID in Position
 order (`LocusIds`). A `RehearsalRuns` table created by an earlier version gains the
-nullable `LocusIds` column on its next save; older rows keep `NULL` there. If saving fails, for example
+nullable `LocusIds` column on its next save; older rows keep `NULL` there. A `Route` column
+(`TopFirst` or `BottomFirst` for advanced rehearsals, `NULL` for Position order) is added the
+same way. If saving fails, for example
 because the database is locked, the result card says so and the run is not recorded.
 
 ```sql
@@ -128,6 +150,20 @@ known/missed counts, last lap's score, and your current streak. Loop drills are 
 only: they are untimed and are not saved to `RehearsalRuns`. The only thing recorded is a
 Room's first loop drill, which starts its [learning time](#learning-time). The last range
 you typed is offered the next time you press **/**.
+
+### Rehearse a section
+
+Type **r** and a range in the loop prompt, such as `r 1-6` or `r 10-12, 20`, to rehearse
+just those Positions the way **R** rehearses the whole Room. It walks them in order, then
+each later round brings the camera back to that round's misses only, until a round has
+none. The result card shows the section's first-pass score, rounds and misses; **Space**
+or **H** runs the same section again, **/** picks a new range, and **Q** ends it. If you type
+**r** and then press **Tab**, the weak spots fill in as a section rehearsal.
+
+Section rehearsals are practice only. Like loop drills they are not saved to
+`RehearsalRuns`, so they never change a Room's learned status, personal bests, medals,
+trophies, streak or review forecasts. Only a flawless rehearsal of the **whole** Room (**R**)
+counts the Room as learned, even if a section covers every Position.
 
 ### Build up a Room
 

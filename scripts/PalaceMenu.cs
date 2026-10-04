@@ -445,7 +445,9 @@ public partial class PalaceMenu : CanvasLayer
             _runs = [];
             GD.PrintErr(ex.Message);
         }
-        _progress = RoomProgress.ByRoom(_runs);
+        // Best times, medals and scores shown per Room are for Position-order rehearsals; advanced
+        // routes keep their own bests (see AdvancedSummary).
+        _progress = RoomProgress.ByRoom(_runs.Where(r => !r.Route.IsAdvanced()));
         try { _learningStarts = new RehearsalStore().LoadFirstLoopDrills(progressDatabasePath); }
         catch (Exception ex)
         {
@@ -494,7 +496,20 @@ public partial class PalaceMenu : CanvasLayer
         var last = days switch { 0 => "today", 1 => "yesterday", _ => $"{days} days ago" };
         return $"[color=#{ViewerHud.MedalColor(medal).ToHtml(false)}][b]{medal.ToString().ToUpperInvariant()}[/b][/color]   " +
             $"Best {RehearsalScoring.FormatTime(progress.Fastest!.DurationMs)}   ·   flawless best {perfect}   ·   " +
-            $"high score {progress.BestScore:N0}   ·   combo ×{progress.BestCombo}   ·   {Plural(progress.Runs.Count, "run")}, last {last}\n";
+            $"high score {progress.BestScore:N0}   ·   combo ×{progress.BestCombo}   ·   {Plural(progress.Runs.Count, "run")}, last {last}\n" +
+            AdvancedSummary(room);
+    }
+
+    private string AdvancedSummary(RoomSummary room)
+    {
+        var runs = _runs.Where(r => r.RoomId == room.Id).ToArray();
+        var key = Keys.Label(KeyAction.AdvancedRehearse);
+        if (!RehearsalRoutes.Unlocked(runs))
+            return $"[color=#93a7ac]ADVANCED  locked: earn {RehearsalRoutes.UnlockMedal} here to walk it band by band ({key})[/color]\n";
+        var routes = RehearsalRoutes.Advanced.Select(route => new RoomProgress(room.Id, runs.Where(r => r.Route == route).ToArray()) is { Fastest: { } best } progress
+            ? $"{route.Name()} [b]{RehearsalScoring.FormatTime(best.DurationMs)}[/b] [color=#{ViewerHud.MedalColor(progress.BestMedal).ToHtml(false)}]{progress.BestMedal.ToString().ToUpperInvariant()}[/color]"
+            : $"{route.Name()} [color=#93a7ac]not yet[/color]");
+        return $"[color=#f1d39b]ADVANCED[/color]  unlocked ({key})   ·   " + string.Join("   ·   ", routes) + "\n";
     }
 
     private void ShowTrophies()

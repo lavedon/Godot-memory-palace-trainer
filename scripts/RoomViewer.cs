@@ -18,6 +18,12 @@ public partial class RoomViewer : Node3D
     public RehearsalSession? Rehearsal { get; private set; }
     public RehearsalOutcome? LastOutcome { get; private set; }
     public LoopDrill? Drill { get; private set; }
+    // The Positions of a section rehearsal ("r 1-6" in the loop prompt); null for a full rehearsal.
+    // Sections repeat misses like a full rehearsal but are practice only and never saved, so only
+    // a flawless full-Room rehearsal counts a Room as learned.
+    public IReadOnlyList<int>? Section { get; private set; }
+    // The route the next advanced rehearsal takes; null picks one at random. Set by verification.
+    public RehearsalRoute? NextAdvancedRoute { get; set; }
     // Where rehearsal history is read and saved. Verification points this at a copy.
     public string ProgressDatabasePath { get; set; } = ViewerOptions.DefaultDatabasePath;
     // The day FSRS forecasts are made for; verification moves it forward to see recall decay.
@@ -167,6 +173,7 @@ public partial class RoomViewer : Node3D
             var quizzable = _loaded && Room!.Loci.Count > 0;
             if (IsEscape(key)) Input.MouseMode = Input.MouseModeEnum.Visible;
             else if (quizzable && Keys.Is(KeyAction.Rehearse, key)) StartRehearsal();
+            else if (quizzable && Keys.Is(KeyAction.AdvancedRehearse, key)) StartAdvancedRehearsal();
             else if (quizzable && Keys.Is(KeyAction.Loop, key)) OpenDrillPrompt();
             else if (Keys.Is(KeyAction.PalaceMenu, key)) OpenMenu();
             else if (Keys.Is(KeyAction.KeyBindings, key)) OpenKeyBindings();
@@ -253,20 +260,59 @@ public partial class RoomViewer : Node3D
             return button.ButtonIndex is MouseButton.Left or MouseButton.Right;
         }
         if (@event is not InputEventKey { Pressed: true, Echo: false } key) return false;
-        if (Keys.Is(KeyAction.Quit, key) || Keys.Is(KeyAction.Rehearse, key)) StopRehearsal();
-        else if (Keys.Is(KeyAction.Reveal, key)) { if (Rehearsal!.IsComplete) StartRehearsal(); else RevealRehearsal(); }
+        if (Keys.Is(KeyAction.Quit, key) || Keys.Is(KeyAction.Rehearse, key) || Keys.Is(KeyAction.AdvancedRehearse, key)) StopRehearsal();
+        else if (Keys.Is(KeyAction.Reveal, key))
+        {
+            // Going again on an advanced route picks a fresh random route.
+            if (!Rehearsal!.IsComplete) RevealRehearsal();
+            else if (Rehearsal.Route.IsAdvanced()) StartAdvancedRehearsal();
+            else StartRehearsal(section: Section);
+        }
         else if (Keys.Is(KeyAction.Missed, key)) GradeRehearsal(knew: false);
         else if (Keys.Is(KeyAction.Knew, key)) GradeRehearsal(knew: true);
+        // A section can switch to a new range; a full rehearsal ignores the Loop key.
+        else if (Section is not null && Keys.Is(KeyAction.Loop, key)) { StopRehearsal(); OpenDrillPrompt(); }
         else return IsExploring(key) || Keys.Is(KeyAction.Loop, key);
         return true;
     }
 
     private LocusDisplay? RehearsalDisplay => Rehearsal?.Current is { } position ? Displays[position - 1] : null;
 
-    // feedback is BBCode shown until the first answer.
-    public void StartRehearsal(string feedback = "")
+    // Advanced rehearsal walks the Room band by band on a random route. It unlocks once any saved
+    // rehearsal of this Room earned Gold; until then the key only says how to unlock it.
+    public void StartAdvancedRehearsal()
     {
-        Rehearsal = new RehearsalSession(Room!.Loci.Keys);
+        IReadOnlyList<RehearsalRun> runs;
+        try { runs = new RehearsalStore().Load(ProgressDatabasePath).Where(r => r.RoomId == Room!.Id).ToArray(); }
+        catch (ViewerException ex)
+        {
+            GD.PrintErr(ex.Message);
+            Hud.Notice($"Advanced rehearse needs your rehearsal history: {ex.Message.Split('\n')[0]}");
+            return;
+        }
+        if (!RehearsalRoutes.Unlocked(runs))
+        {
+            var best = runs.Select(r => r.Medal).DefaultIfEmpty().Max();
+            Hud.Notice($"Advanced rehearse unlocks at {RehearsalRoutes.UnlockMedal} in this Room" +
+                (best == Medal.None ? "." : $" (your best here is {best}).") + $"   {Keys.Label(KeyAction.Rehearse)}   Go for it");
+            return;
+        }
+        var route = NextAdvancedRoute ?? RehearsalRoutes.Pick(Random.Shared);
+        NextAdvancedRoute = null;
+        StartRehearsal(route: route);
+    }
+
+    // feedback is BBCode shown until the first answer. section limits the rehearsal to those Positions;
+    // an advanced route walks the whole Room band by band.
+    public void StartRehearsal(string feedback = "", IReadOnlyList<int>? section = null, RehearsalRoute route = RehearsalRoute.Standard)
+    {
+        Section = section;
+        Rehearsal = section is not null ? new RehearsalSession(section)
+            : route.IsAdvanced() ? RehearsalSession.Advanced(Room!.Loci.Keys, route) : new RehearsalSession(Room!.Loci.Keys);
+        if (route.IsAdvanced() && feedback.Length == 0)
+            feedback = $"[color=#f1d39b]Route: {route.Name()}[/color]   [color=#93a7ac]each wall band in turn, then floor and ceiling[/color]";
+        if (section is not null && feedback.Length == 0)
+            feedback = $"[color=#93a7ac]Practice only, not saved. A flawless full-Room rehearsal ({Keys.Label(KeyAction.Rehearse)}) counts the Room as learned.[/color]";
         LastOutcome = null;
         _rehearsalStarted = DateTimeOffset.Now;
         _rehearsalSeconds = 0;
@@ -283,7 +329,8 @@ public partial class RoomViewer : Node3D
             _learningStarts = new Dictionary<long, DateTimeOffset>();
             GD.PrintErr(ex.Message);
         }
-        _ghost = new RoomProgress(Room.Id, _history.Where(r => r.RoomId == Room.Id).ToArray()).Fastest;
+        // Ghost splits compare with the fastest full rehearsal on the same route; a section has none.
+        _ghost = section is null ? new RoomProgress(Room!.Id, _history.Where(r => r.RoomId == Room.Id && r.Route == route).ToArray()).Fastest : null;
         foreach (var display in Displays)
         {
             display.Billboard.Visible = false;
@@ -295,6 +342,7 @@ public partial class RoomViewer : Node3D
     public void StopRehearsal()
     {
         Rehearsal = null;
+        Section = null;
         Player.CancelGuide();
         foreach (var display in Displays)
         {
@@ -311,7 +359,7 @@ public partial class RoomViewer : Node3D
         RehearsalDisplay!.Billboard.Visible = true;
         Hud.ShowReading(RehearsalDisplay);
         _sounds.Play(RehearsalSound.Reveal);
-        Hud.ShowRehearsal(Rehearsal, RehearsalMs, _ghost, _feedback);
+        Hud.ShowRehearsal(Rehearsal, RehearsalMs, _ghost, _feedback, Section);
     }
 
     private void GradeRehearsal(bool knew)
@@ -336,6 +384,12 @@ public partial class RoomViewer : Node3D
 
     private void FinishRehearsal()
     {
+        if (Section is { } section)
+        {
+            Hud.ShowSectionResult(Rehearsal!, section);
+            _sounds.Play(RehearsalSound.Clear);
+            return;
+        }
         var run = RehearsalRun.From(Rehearsal!, Room!, _rehearsalStarted, DateTimeOffset.Now);
         string? error = null;
         try
@@ -371,7 +425,7 @@ public partial class RoomViewer : Node3D
         var display = RehearsalDisplay!;
         display.SetCue(MarkerCue.Target);
         Player.Guide(display.Viewpoint, display.GlobalPosition, GuideSeconds);
-        Hud.ShowRehearsal(Rehearsal!, RehearsalMs, _ghost, _feedback);
+        Hud.ShowRehearsal(Rehearsal!, RehearsalMs, _ghost, _feedback, Section);
     }
 
     public void OpenDrillPrompt()
@@ -411,10 +465,16 @@ public partial class RoomViewer : Node3D
     // An empty or invalid range keeps the prompt open.
     public void StartDrill(string range)
     {
-        LoopDrill drill;
+        LoopDrill? drill = null;
+        IReadOnlyList<int>? section = null;
         try
         {
-            if (LoopDrill.TryParseBuildUp(range, out var from, out var to)) drill = LoopDrill.BuildUpTo(Room!.Loci.Keys, to, from);
+            if (RehearsalSession.TryParseSection(range, out var sectionPositions))
+            {
+                section = sectionPositions.Where(Room!.Loci.ContainsKey).ToArray();
+                if (section.Count == 0) throw new ViewerException($"No populated Positions in {range.Trim()}.");
+            }
+            else if (LoopDrill.TryParseBuildUp(range, out var from, out var to)) drill = LoopDrill.BuildUpTo(Room!.Loci.Keys, to, from);
             else
             {
                 var positions = LoopDrill.ParseRange(range).Where(Room!.Loci.ContainsKey).ToArray();
@@ -429,7 +489,12 @@ public partial class RoomViewer : Node3D
         }
         s_drillRange = range.Trim();
         CloseDrillPrompt();
-        Drill = drill;
+        if (section is not null)
+        {
+            StartRehearsal(section: section);
+            return;
+        }
+        Drill = drill!;
         _feedback = StartLearningClock();
         foreach (var display in Displays)
         {
@@ -604,7 +669,7 @@ public partial class RoomViewer : Node3D
         if (Rehearsal is { IsComplete: false } && !overlay)
         {
             _rehearsalSeconds += delta;
-            Hud.ShowRehearsal(Rehearsal, RehearsalMs, _ghost, _feedback);
+            Hud.ShowRehearsal(Rehearsal, RehearsalMs, _ghost, _feedback, Section);
         }
     }
 

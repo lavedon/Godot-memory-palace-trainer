@@ -3,7 +3,7 @@ namespace PalaceRoomViewer.Core;
 public enum KeyAction
 {
     WalkForward, WalkBack, WalkLeft, WalkRight, PalaceMenu, Rehearse, Loop, Sound, KeyBindings,
-    AllText, ThisText, Markers, Reveal, Knew, Missed, Quit
+    AllText, ThisText, Markers, Reveal, Knew, Missed, Quit, AdvancedRehearse
 }
 
 // Where an action is live. Anywhere actions clash with every other action; Exploring and Quiz
@@ -32,6 +32,7 @@ public sealed class KeyBindings
         new(KeyAction.WalkRight, "Walk right", KeyContext.Anywhere),
         new(KeyAction.PalaceMenu, "Palace menu", KeyContext.Anywhere),
         new(KeyAction.Rehearse, "Rehearse (start / stop)", KeyContext.Anywhere),
+        new(KeyAction.AdvancedRehearse, "Advanced rehearse (after Gold)", KeyContext.Anywhere),
         new(KeyAction.Loop, "Loop drill (new range)", KeyContext.Anywhere),
         new(KeyAction.Sound, "Sound on / off", KeyContext.Anywhere),
         new(KeyAction.KeyBindings, "Key bindings", KeyContext.Anywhere),
@@ -52,6 +53,7 @@ public sealed class KeyBindings
         [KeyAction.WalkRight] = [Letter('D'), None],
         [KeyAction.PalaceMenu] = [Letter('M'), None],
         [KeyAction.Rehearse] = [Letter('R'), None],
+        [KeyAction.AdvancedRehearse] = [Letter('G'), None],
         [KeyAction.Loop] = [Slash, Letter('T')],
         [KeyAction.Sound] = [Letter('V'), None],
         [KeyAction.KeyBindings] = [F1, None],
@@ -108,6 +110,7 @@ public sealed class KeyBindings
     public static KeyBindings Parse(string text)
     {
         var bindings = Defaults();
+        var loaded = new HashSet<KeyAction>();
         foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             var parts = line.Split('=', 2);
@@ -115,7 +118,17 @@ public sealed class KeyBindings
             var keys = parts[1].Split(',');
             if (keys.Length != Slots || !keys.All(k => long.TryParse(k, out var v) && v >= 0 && v != Escape)) continue;
             bindings._keys[action] = keys.Select(long.Parse).ToArray();
+            loaded.Add(action);
         }
+        // An action added after the file was saved keeps its default keys only where they clash
+        // with nothing the user chose; a clashing default is left unbound.
+        foreach (var added in Actions.Where(a => !loaded.Contains(a.Action)))
+            for (var slot = 0; slot < Slots; slot++)
+            {
+                var key = bindings._keys[added.Action][slot];
+                if (key != None && Actions.Any(o => loaded.Contains(o.Action) && Clash(added.Context, o.Context) && bindings._keys[o.Action].Contains(key)))
+                    bindings._keys[added.Action][slot] = None;
+            }
         return bindings;
     }
 }

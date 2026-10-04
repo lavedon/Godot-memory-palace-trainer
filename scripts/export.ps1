@@ -47,6 +47,10 @@ R: rehearse the Room in order. Space or H reveals; J = knew it, K = missed
 (2 and 1 also work). Misses repeat until a clean round. Q (or R) stops. V: sound on/off.
 / (or T): loop drill. Type Positions such as 1-3 or 1-3, 7, then Enter; the camera
 loops those Positions over and over (same keys) until Q. / mid-drill picks a new range.
+Type r 1-6 instead to rehearse just those Positions: misses come back until a clean
+round. Practice only, never saved; only a flawless whole-Room rehearsal (R) counts.
+G: advanced rehearsal, unlocked by a Gold medal in the Room. Walks the walls band by band
+(top first or bottom first, picked at random), then floor and ceiling. Each route keeps its own best time.
 Review next (Palace menu): FSRS ranks Rooms by how many Loci you have likely
 forgotten, from your rehearsal first passes. In a Room, / then TAB loops its weak spots.
 Palace menu, Copy Anki command: copies the command that builds the selected Room's

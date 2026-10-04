@@ -8,6 +8,8 @@ public sealed record RehearsalRun(long RoomId, DateTimeOffset StartedAt, DateTim
     public long Id { get; init; }
     // Loci.Id at each Position, aligned with Positions. Null for runs saved before this was recorded.
     public IReadOnlyList<long>? LocusIds { get; init; }
+    // How the Room was walked. Times and splits are only comparable between runs on the same route.
+    public RehearsalRoute Route { get; init; }
     public int LociCount => Positions.Count;
     public int FirstPassKnown => LociCount - MissesByRound[0].Count;
     public int Rounds => MissesByRound.Count;
@@ -28,7 +30,7 @@ public sealed record RehearsalRun(long RoomId, DateTimeOffset StartedAt, DateTim
             session.FirstPassSplitsMs.ToArray(),
             session.FirstPassMisses.Select(p => room.Loci[p].Id).ToArray(),
             session.BestCombo, session.Score)
-        { LocusIds = session.Positions.Select(p => room.Loci[p].Id).ToArray() };
+        { LocusIds = session.Positions.Select(p => room.Loci[p].Id).ToArray(), Route = session.Route };
 }
 
 // Personal bests for one Room.
@@ -103,7 +105,7 @@ public static class Achievements
 
     private static bool BeatBest(RehearsalRun run, IReadOnlyList<RehearsalRun> earlier)
     {
-        var previous = earlier.Where(r => r.RoomId == run.RoomId).ToArray();
+        var previous = earlier.Where(r => r.RoomId == run.RoomId && r.Route == run.Route).ToArray();
         return previous.Length > 0 && run.DurationMs < previous.Min(r => r.DurationMs);
     }
 
@@ -118,6 +120,7 @@ public static class Achievements
         new("combo-10", "On a Roll", "Reach a ×10 combo.", (r, _) => r.BestCombo >= 10),
         new("combo-20", "Unstoppable", "Reach a ×20 combo.", (r, _) => r.BestCombo >= 20),
         new("personal-best", "Faster Than Before", "Beat your best time on a Room.", BeatBest),
+        new("advanced", "Off the Beaten Path", "Clear a Room on an advanced route (unlocked by Gold).", (r, _) => r.Route.IsAdvanced()),
         new("comeback", "Comeback", "Clear a Room after missing 5 or more on the first pass.", (r, _) => r.MissesByRound[0].Count >= 5),
         new("high-score", "Five Thousand", "Score 5,000 points in one rehearsal.", (r, _) => r.Score >= 5_000),
         new("explorer", "Explorer", "Rehearse 5 different Rooms.", (r, e) => e.Select(x => x.RoomId).Append(r.RoomId).Distinct().Count() >= 5),
@@ -159,24 +162,28 @@ public sealed record RehearsalOutcome(RehearsalRun Run, RoomProgress Before, IRe
     public RoomLearning? JustLearned { get; init; }
     // The quickest any earlier Room was learned, to compare with JustLearned.
     public TimeSpan? FastestLearnedBefore { get; init; }
+    // This run earned the Room's first Gold (or better), unlocking advanced rehearsal there.
+    public bool AdvancedUnlocked { get; init; }
     public bool FirstClear => Before.Runs.Count == 0;
     public long? PreviousBestMs => Before.Fastest?.DurationMs;
     public bool NewBestTime => PreviousBestMs is { } best && Run.DurationMs < best;
     public bool NewHighScore => !FirstClear && Run.Score > Before.BestScore;
     public bool NewBestCombo => !FirstClear && Run.BestCombo > Before.BestCombo;
     public bool NewBestMedal => Run.Medal > Before.BestMedal;
-    public bool Celebrate => NewBestTime || NewHighScore || (NewBestMedal && Run.Medal >= Medal.Gold) || Unlocked.Count > 0 || JustLearned is not null;
+    public bool Celebrate => NewBestTime || NewHighScore || (NewBestMedal && Run.Medal >= Medal.Gold) || Unlocked.Count > 0 || JustLearned is not null || AdvancedUnlocked;
 
     // learningStarts holds each Room's first loop drill (RehearsalStore.LoadFirstLoopDrills) and loci each
     // Room's Positions, as RoomLearning.ByRoom takes them. A new run walks every Position its Room has now.
     public static RehearsalOutcome Create(IReadOnlyList<RehearsalRun> history, RehearsalRun run, DateOnly today, string? saveError = null,
         IReadOnlyDictionary<long, DateTimeOffset>? learningStarts = null, IReadOnlyDictionary<long, IReadOnlyDictionary<int, long>>? loci = null)
     {
-        var before = new RoomProgress(run.RoomId, history.Where(r => r.RoomId == run.RoomId).ToArray());
-        var learned = run.Perfect && !before.Runs.Any(r => RoomLearning.Learns(r, run.Positions));
+        // Bests compare runs on the same route; learning considers every full rehearsal of the Room.
+        var before = new RoomProgress(run.RoomId, history.Where(r => r.RoomId == run.RoomId && r.Route == run.Route).ToArray());
+        var learned = run.Perfect && !history.Any(r => r.RoomId == run.RoomId && RoomLearning.Learns(r, run.Positions));
         learningStarts ??= new Dictionary<long, DateTimeOffset>();
         return new(run, before, Achievements.NewlyUnlocked(history, run), RehearsalStreak.Days(history.Append(run).Select(r => r.Day), today), saveError)
         {
+            AdvancedUnlocked = RehearsalRoutes.Unlocked([run]) && !RehearsalRoutes.Unlocked(history.Where(r => r.RoomId == run.RoomId)),
             JustLearned = learned ? new RoomLearning(run.RoomId, learningStarts.TryGetValue(run.RoomId, out var start) ? start : null, run) : null,
             FastestLearnedBefore = learned ? RoomLearning.ByRoom(learningStarts, history.Where(r => r.RoomId != run.RoomId), loci).Values.Min(l => l.Duration) : null
         };

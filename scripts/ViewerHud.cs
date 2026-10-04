@@ -15,6 +15,7 @@ public partial class ViewerHud : CanvasLayer
     private Label _focusHint = null!;
     private Label _crosshair = null!;
     private Label _pauseHint = null!;
+    private Label _notice = null!;
     private Label _controls = null!;
     private Label _controlsMore = null!;
     private PanelContainer _readingPanel = null!;
@@ -53,6 +54,7 @@ public partial class ViewerHud : CanvasLayer
     public string WarningText => _warningsText.Text;
     public bool ReadingVisible => _readingPanel.Visible;
     public bool RehearsalVisible => _rehearsalPanel.Visible;
+    public string NoticeText => _notice.Text;
     public string ControlsText => _controls.Text + "\n" + _controlsMore.Text;
     public string RehearsalText => string.Join("\n", _rehearsalTitle.Text, _rehearsalTarget.Text, _rehearsalLive.GetParsedText(), _rehearsalPrompt.Text);
 
@@ -79,6 +81,14 @@ public partial class ViewerHud : CanvasLayer
         stateBox.AddChild(_state);
         _focusHint = Text("L   Aim at a Position", 13, Muted);
         stateBox.AddChild(_focusHint);
+
+        _notice = Text("", 16, new Color("f1d39b"));
+        _notice.HorizontalAlignment = HorizontalAlignment.Center;
+        _notice.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+        _root.AddChild(_notice);
+        _notice.SetAnchorsAndOffsetsPreset(Control.LayoutPreset.CenterTop);
+        _notice.OffsetLeft = -360; _notice.OffsetRight = 360;
+        _notice.OffsetTop = 196; _notice.OffsetBottom = 250;
 
         _pauseHint = Text("", 15, Ink);
         _root.AddChild(_pauseHint);
@@ -163,6 +173,7 @@ public partial class ViewerHud : CanvasLayer
         };
         drillBox.AddChild(_drillRange);
         drillBox.AddChild(Text("e.g.  1-3   or   1-3, 7, 10-12        ENTER   Start loop        ESC   Cancel", 13, Muted));
+        drillBox.AddChild(Text("r 1-6   Rehearse just those: misses come back until a clean round (practice, not saved)", 13, Muted));
         drillBox.AddChild(Text($"b   Build up from the last Locus: {LoopDrill.CleanLapsToGrow} clean laps add the one before        b 18   Build up to 18", 13, Muted));
         _drillWeak = Text("", 13, new Color("f1d39b"));
         drillBox.AddChild(_drillWeak);
@@ -237,7 +248,7 @@ public partial class ViewerHud : CanvasLayer
             $"{K(KeyAction.AllText)}   All text    {K(KeyAction.ThisText)}   This text    {K(KeyAction.Markers)}   Markers    " +
             $"{K(KeyAction.Rehearse)}   Rehearse    {K(KeyAction.Loop)}   Loop";
         _controlsMore.Text = "LEFT CLICK   This text    RIGHT CLICK   All text    ESC   Release mouse    " +
-            $"{K(KeyAction.PalaceMenu)}   Palaces    {K(KeyAction.Sound)}   Sound    {K(KeyAction.KeyBindings)}   Keys";
+            $"{K(KeyAction.PalaceMenu)}   Palaces    {K(KeyAction.AdvancedRehearse)}   Advanced    {K(KeyAction.Sound)}   Sound    {K(KeyAction.KeyBindings)}   Keys";
     }
 
     private static string K(KeyAction action) => Keys.Label(action);
@@ -288,28 +299,54 @@ public partial class ViewerHud : CanvasLayer
 
     // Called every frame while rehearsing; labels only change when their text does.
     // feedback is BBCode for the last answer, e.g. "+180   −1.3 s".
-    public void ShowRehearsal(RehearsalSession session, long elapsedMs, RehearsalRun? best, string feedback)
+    // section is the Positions of a section rehearsal (practice only), or null for the whole Room.
+    public void ShowRehearsal(RehearsalSession session, long elapsedMs, RehearsalRun? best, string feedback, IReadOnlyList<int>? section = null)
     {
         if (session.Current is not { } position) return;
         _rehearsalPanel.Visible = true;
-        Set(_rehearsalTitle, session.Round == 1 ? "R E H E A R S E   /   R O U N D   1   ·   W H O L E   R O O M"
-            : $"R E H E A R S E   /   R O U N D   {session.Round}   ·   M I S S E S   O N L Y");
+        var mode = session.Route.IsAdvanced() ? "A D V A N C E D" : "R E H E A R S E";
+        var scope = section is not null ? $"S E C T I O N   {LoopDrill.Describe(section)}"
+            : session.Route.IsAdvanced() ? Spaced(session.Route.Name()) : "W H O L E   R O O M";
+        Set(_rehearsalTitle, session.Round == 1 ? $"{mode}   /   R O U N D   1   ·   {scope}"
+            : $"{mode}   /   R O U N D   {session.Round}   ·   M I S S E S   O N L Y" + (section is null && !session.Route.IsAdvanced() ? "" : $"   ·   {scope}"));
         Set(_rehearsalTarget, $"Position {position:00}   ·   {RoomLayout.Description(position)}");
         _rehearsalTarget.AddThemeColorOverride("font_color", Ink);
-        var bestText = best is null ? "[color=#93a7ac]first clear sets the target[/color]" : $"[color=#93a7ac]BEST[/color]  {RehearsalScoring.FormatTime(best.DurationMs)}";
+        var bestText = section is not null ? "[color=#93a7ac]practice · not saved[/color]"
+            : best is null ? "[color=#93a7ac]first clear sets the target[/color]" : $"[color=#93a7ac]BEST[/color]  {RehearsalScoring.FormatTime(best.DurationMs)}";
         var combo = session.Round == 1 && session.Combo >= 2 ? $"      [color=#f1d39b]COMBO ×{session.Combo}[/color]" : "";
         SetRich(_rehearsalLive,
             $"[color=#93a7ac]TIME[/color]  [b]{RehearsalScoring.FormatTime(elapsedMs)}[/b]      {bestText}      " +
             $"[color=#93a7ac]SCORE[/color]  {session.Score:N0}{combo}\n" +
             $"[color=#93a7ac]{session.IndexInRound + 1} of {session.RoundPositions.Count}   ·   {session.RoundMisses.Count} missed this round[/color]      {feedback}");
-        Set(_rehearsalPrompt, session.Revealed ? GradePrompt($"{K(KeyAction.Sound)}   Sound") : RevealPrompt($"{K(KeyAction.Quit)}   Quit"));
+        Set(_rehearsalPrompt, session.Revealed ? GradePrompt($"{K(KeyAction.Sound)}   Sound")
+            : RevealPrompt((section is null ? "" : $"{K(KeyAction.Loop)}   New range        ") + $"{K(KeyAction.Quit)}   Quit"));
+    }
+
+    // A cleared section: how it went, and a reminder that it counts for nothing saved.
+    public void ShowSectionResult(RehearsalSession session, IReadOnlyList<int> section)
+    {
+        _rehearsalPanel.Visible = true;
+        Set(_rehearsalTitle, $"R E H E A R S E   /   S E C T I O N   {LoopDrill.Describe(section)}   ·   C L E A R");
+        var flawless = session.FirstPassMisses.Count == 0;
+        Set(_rehearsalTarget, (flawless ? "FLAWLESS" : "CLEARED") + $"   ·   {RehearsalScoring.FormatTime(session.ElapsedMs)}");
+        _rehearsalTarget.AddThemeColorOverride("font_color", flawless ? Accent : Ink);
+        var lines = new List<string>
+        {
+            $"{session.Positions.Count - session.FirstPassMisses.Count} of {session.Positions.Count} on the first pass   ·   " +
+                (session.Round == 1 ? "no misses" : $"{session.Round} rounds") + $"   ·   best combo ×{session.BestCombo}   ·   score {session.Score:N0}",
+        };
+        if (!flawless) lines.Add("[color=#93a7ac]First-pass misses: " + string.Join(", ", session.FirstPassMisses.Select(p => p.ToString("00"))) + "[/color]");
+        lines.Add($"[color=#93a7ac]Practice only, not saved. A flawless full-Room rehearsal ({K(KeyAction.Rehearse)}) counts the Room as learned.[/color]");
+        SetRich(_rehearsalLive, string.Join("\n", lines));
+        Set(_rehearsalPrompt, $"{K(KeyAction.Reveal)}   Same section again        {K(KeyAction.Loop)}   New range        {K(KeyAction.Quit)}   Done");
     }
 
     public void ShowRehearsalResult(RehearsalOutcome outcome)
     {
         var run = outcome.Run;
         _rehearsalPanel.Visible = true;
-        Set(_rehearsalTitle, "R E H E A R S E   /   R O O M   C L E A R");
+        Set(_rehearsalTitle, run.Route.IsAdvanced() ? $"A D V A N C E D   /   R O O M   C L E A R   ·   {Spaced(run.Route.Name())}"
+            : "R E H E A R S E   /   R O O M   C L E A R");
         Set(_rehearsalTarget, $"{run.Medal.ToString().ToUpperInvariant()}   ·   {RehearsalScoring.FormatTime(run.DurationMs)}");
         _rehearsalTarget.AddThemeColorOverride("font_color", MedalColor(run.Medal));
         var lines = new List<string>();
@@ -319,7 +356,10 @@ public partial class ViewerHud : CanvasLayer
                     : took < fastest ? $"   [color=#f1d39b]FASTEST YET[/color]   (was {RoomLearning.Format(fastest)})"
                     : $"   [color=#93a7ac]fastest Room {RoomLearning.Format(fastest)}[/color]")
                 : "[color=#93a7ac]Every Locus flawless. No loop drill was recorded here first, so there is no learning time.[/color]"));
-        if (outcome.FirstClear) lines.Add("[color=#f1d39b]FIRST CLEAR[/color]   This is your time to beat.");
+        if (outcome.AdvancedUnlocked)
+            lines.Add($"[color=#f1d39b][b]ADVANCED REHEARSE UNLOCKED[/b][/color]   Press {K(KeyAction.AdvancedRehearse)} to walk the Room band by band.");
+        if (outcome.FirstClear) lines.Add(run.Route.IsAdvanced() ? "[color=#f1d39b]FIRST CLEAR ON THIS ROUTE[/color]   This is its time to beat."
+            : "[color=#f1d39b]FIRST CLEAR[/color]   This is your time to beat.");
         else if (outcome.NewBestTime)
             lines.Add($"[color=#f1d39b][b]NEW PERSONAL BEST[/b][/color]   [color=#88d8c4]{RehearsalScoring.FormatDelta(run.DurationMs - outcome.PreviousBestMs!.Value)}[/color]   (was {RehearsalScoring.FormatTime(outcome.PreviousBestMs.Value)})");
         else
@@ -337,8 +377,22 @@ public partial class ViewerHud : CanvasLayer
         Set(_rehearsalPrompt, $"{K(KeyAction.Reveal)}   Rehearse again        {K(KeyAction.Quit)}   Done        {K(KeyAction.PalaceMenu)}   Palaces");
     }
 
+    // "top band first" -> "T O P   B A N D   F I R S T", matching the panel titles.
+    private static string Spaced(string text) =>
+        string.Join("   ", text.ToUpperInvariant().Split(' ').Select(word => string.Join(" ", word.ToCharArray())));
+
     private static string GradePrompt(string extra) => $"{K(KeyAction.Knew)}   Knew it        {K(KeyAction.Missed)}   Missed        {extra}";
     private static string RevealPrompt(string extra) => $"Recall it, then   {K(KeyAction.Reveal)}   Reveal        {extra}";
+
+    // A short message that fades after a few seconds, e.g. why advanced rehearse is still locked.
+    public void Notice(string text)
+    {
+        _notice.Text = text;
+        _notice.Modulate = Colors.White;
+        var tween = CreateTween();
+        tween.TweenInterval(4);
+        tween.TweenProperty(_notice, "modulate:a", 0f, 1);
+    }
 
     public void HideRehearsal() => _rehearsalPanel.Visible = false;
 
@@ -369,8 +423,11 @@ public partial class ViewerHud : CanvasLayer
     public void FillWeakSpots()
     {
         if (_weakRange is null) return;
-        _drillRange.Text = _weakRange;
-        _drillRange.CaretColumn = _weakRange.Length;
+        // "r" typed first keeps it a section rehearsal of the weak spots.
+        var section = System.Text.RegularExpressions.Regex.IsMatch(_drillRange.Text, @"^\s*(rehearse|r)(\s|\d|$)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        _drillRange.Text = (section ? "r " : "") + _weakRange;
+        _drillRange.CaretColumn = _drillRange.Text.Length;
     }
 
     public void HideDrillPrompt()

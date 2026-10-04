@@ -194,6 +194,11 @@ public static class RuntimeVerification
                     var clockStartedEarlier = store.LoadFirstLoopDrills(progressDatabase).ContainsKey(viewer.Room.Id);
                     var markerColors = viewer.Displays.Select(d => d.Marker.Modulate).ToArray();
                     viewer.GuideSeconds = 0;
+                    if (!RehearsalRoutes.Unlocked(store.Load(progressDatabase).Where(r => r.RoomId == viewer.Room.Id)))
+                    {
+                        Keypress(Key.G);
+                        Check(viewer.Rehearsal is null && viewer.Hud.NoticeText.Contains("unlocks at Gold"), "Advanced rehearse stays locked until Gold");
+                    }
                     Keypress(Key.R);
                     await Frame(3);
                     Check(viewer.Hud.RehearsalText.Contains("TIME") && viewer.Hud.RehearsalText.Contains("SCORE"), "Rehearsal shows a live timer and score");
@@ -370,6 +375,80 @@ public static class RuntimeVerification
                     Input.MouseMode = Input.MouseModeEnum.Visible;
                     Check(viewer.Displays.Select(d => d.Marker.Modulate).SequenceEqual(markerColors), "Ending the loop drill restores marker colors");
 
+                    // Section rehearsal: "r <range>" in the loop prompt. Misses come back; nothing is saved.
+                    var runsBeforeSection = store.Load(progressDatabase).Count;
+                    Keypress(Key.Slash);
+                    viewer.StartDrill("r " + LoopDrill.Describe(loop).Replace('–', '-'));
+                    Check(viewer.Rehearsal is { Round: 1 } sectionRun && sectionRun.Positions.SequenceEqual(loop) && viewer.Section!.SequenceEqual(loop) &&
+                        viewer.Drill is null && !viewer.Hud.DrillPromptVisible, "r starts a section rehearsal of just those Positions");
+                    Check(viewer.Hud.RehearsalText.Contains("S E C T I O N") && viewer.Hud.RehearsalText.Contains("not saved"), "The section panel says it is practice");
+                    // Miss the first Position so round 2 has to bring the camera back from the last.
+                    var sectionMiss = loop[0];
+                    foreach (var position in loop)
+                    {
+                        var target = viewer.Displays[position - 1];
+                        target.UpdateScale(player.Camera);
+                        Check(viewer.Rehearsal!.Current == position && target.IsUnderCrosshair(player.Camera, out _), $"Section guides the view to Position {position}");
+                        Keypress(Key.Space);
+                        Keypress(position == sectionMiss ? Key.K : Key.J);
+                    }
+                    var missTarget = viewer.Displays[sectionMiss - 1];
+                    missTarget.UpdateScale(player.Camera);
+                    Check(viewer.Rehearsal!.Round == 2 && viewer.Rehearsal.RoundPositions.SequenceEqual([sectionMiss]) && viewer.Hud.RehearsalText.Contains("M I S S E S"), "A section repeats its misses");
+                    Check(missTarget.IsUnderCrosshair(player.Camera, out _), "The camera goes back to the missed Position");
+                    Keypress(Key.Space);
+                    Keypress(Key.J);
+                    Check(viewer.Rehearsal.IsComplete && viewer.LastOutcome is null && viewer.Hud.RehearsalText.Contains("C L E A R") &&
+                        viewer.Hud.RehearsalText.Contains("not saved"), "A cleared section shows its own result card");
+                    Check(store.Load(progressDatabase).Count == runsBeforeSection, "Section rehearsals are never saved");
+                    await Capture("section-clear");
+                    Keypress(Key.H);
+                    Check(viewer.Rehearsal is { Round: 1, IsComplete: false } && viewer.Section!.SequenceEqual(loop), "Reveal on the result card repeats the same section");
+                    Keypress(Key.Slash);
+                    Check(viewer.Rehearsal is null && viewer.Section is null && viewer.Hud.DrillPromptVisible, "/ during a section picks a new range");
+                    viewer.StartDrill("r");
+                    Check(viewer.Hud.DrillPromptError.Contains("whole Room") && viewer.Rehearsal is null, "r needs Positions");
+                    viewer.StartDrill("r 27");
+                    Check(viewer.Hud.DrillPromptError.Contains("outside") && viewer.Rehearsal is null, "r rejects Positions outside the Room");
+                    Keypress(Key.Escape);
+                    Check(!viewer.Hud.DrillPromptVisible && viewer.Displays.Select(d => d.Marker.Modulate).SequenceEqual(markerColors), "Leaving a section restores marker colors");
+
+                    // Advanced rehearsal: unlocked by the flawless run above; walks the walls band by band.
+                    Check(RehearsalRoutes.Unlocked(store.Load(progressDatabase).Where(r => r.RoomId == viewer.Room.Id)), "The flawless run above unlocks advanced rehearse");
+                    var runsBeforeAdvanced = store.Load(progressDatabase).Count;
+                    var advancedRoute = RehearsalRoutes.Order(RehearsalRoute.TopFirst, populated.Select(d => d.PositionNumber));
+                    viewer.NextAdvancedRoute = RehearsalRoute.TopFirst;
+                    Keypress(Key.G);
+                    Check(viewer.Rehearsal is { Route: RehearsalRoute.TopFirst } advanced && advanced.Positions.SequenceEqual(advancedRoute) &&
+                        viewer.Hud.RehearsalText.Contains("A D V A N C E D"), "G starts an advanced rehearsal on its route");
+                    foreach (var position in advancedRoute)
+                    {
+                        var target = viewer.Displays[position - 1];
+                        target.UpdateScale(player.Camera);
+                        Check(viewer.Rehearsal!.Current == position && target.IsUnderCrosshair(player.Camera, out _), $"Advanced route guides the view to Position {position}");
+                        Keypress(Key.Space);
+                        Keypress(position == advancedRoute[0] ? Key.K : Key.J);
+                    }
+                    var firstOnRoute = viewer.Displays[advancedRoute[0] - 1];
+                    firstOnRoute.UpdateScale(player.Camera);
+                    Check(viewer.Rehearsal!.Round == 2 && viewer.Rehearsal.RoundPositions.SequenceEqual([advancedRoute[0]]) &&
+                        firstOnRoute.IsUnderCrosshair(player.Camera, out _), "An advanced round 2 goes back to the miss");
+                    Keypress(Key.Space);
+                    Keypress(Key.J);
+                    Check(viewer.LastOutcome is { Run.Route: RehearsalRoute.TopFirst, SaveError: null, FirstClear: true } &&
+                        viewer.Hud.RehearsalText.Contains("FIRST CLEAR ON THIS ROUTE"), "A route's first clear sets its own target");
+                    var advancedRuns = store.Load(progressDatabase);
+                    Check(advancedRuns.Count == runsBeforeAdvanced + 1 && advancedRuns[^1].Route == RehearsalRoute.TopFirst &&
+                        advancedRuns[^1].Positions.SequenceEqual(advancedRoute), "Advanced rehearsals are saved with their route");
+                    if (earlierRuns == 0) Check(viewer.LastOutcome!.Unlocked.Any(a => a.Id == "advanced"), "The first advanced clear unlocks its trophy");
+                    await Capture("advanced-clear");
+                    Keypress(Key.H);
+                    Check(viewer.Rehearsal is { Round: 1, IsComplete: false } again && again.Route.IsAdvanced(), "Going again picks an advanced route");
+                    Keypress(Key.Q);
+                    Keypress(Key.M);
+                    Check(viewer.Menu.DetailsText.Contains("ADVANCED") && viewer.Menu.DetailsText.Contains("top band first"), "Palace menu shows advanced route bests");
+                    Keypress(Key.M);
+
                     var keysMenu = viewer.KeysMenu;
                     Keypress(Key.F1);
                     Check(keysMenu.IsOpen && !player.Enabled, "F1 opens the key bindings menu");
@@ -417,9 +496,13 @@ public static class RuntimeVerification
                     Check(viewer.Hud.DrillWeakText.Contains("Weak spots (below 90% recall)"), "Decayed Loci are offered as weak spots");
                     Keypress(Key.Tab);
                     var populatedPositions = populated.Select(d => d.PositionNumber).ToArray();
-                    Check(viewer.Hud.DrillPromptRange == LoopDrill.Describe(populatedPositions), "TAB fills the weak spots into the range");
+                    // The prompt remembers the section rehearsal above ("r …"), so TAB keeps it a section.
+                    Check(viewer.Hud.DrillPromptRange == "r " + LoopDrill.Describe(populatedPositions), "TAB fills the weak spots, keeping a section's r");
                     await Capture("weak-spots");
                     viewer.StartDrill(viewer.Hud.DrillPromptRange);
+                    Check(viewer.Section is { } weakSection && weakSection.SequenceEqual(populatedPositions) && viewer.Drill is null, "Weak spots start a section rehearsal");
+                    viewer.StopRehearsal();
+                    viewer.StartDrill(LoopDrill.Describe(populatedPositions));
                     Check(viewer.Drill is { } weakDrill && weakDrill.Positions.SequenceEqual(populatedPositions), "Weak spots start a loop drill");
                     viewer.StopDrill();
                     Keypress(Key.M);

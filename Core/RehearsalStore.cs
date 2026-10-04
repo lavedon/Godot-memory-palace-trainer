@@ -8,7 +8,7 @@ namespace PalaceRoomViewer.Core;
 // created on its first write. RehearsalRuns gets one INSERT per completed rehearsal; FirstLoopDrills
 // gets one row per Room, when its first loop drill starts its learning clock (ADR 0005).
 // Rooms and Loci are never written.
-// Tables created before LocusIds existed gain that nullable column on their next save (ADR 0004).
+// Tables created before LocusIds (ADR 0004) or Route (ADR 0007) existed gain those nullable columns on their next save.
 public sealed class RehearsalStore
 {
     public const string LoopDrillTable = "FirstLoopDrills";
@@ -37,7 +37,8 @@ public sealed class RehearsalStore
             MissesByRound           TEXT    NOT NULL,   -- JSON array of arrays of Positions
             SplitsMs                TEXT    NOT NULL,   -- JSON array, elapsed ms at each first-pass answer
             FirstPassMissedLocusIds TEXT    NOT NULL,   -- JSON array of Loci.Id
-            LocusIds                TEXT                -- JSON array of Loci.Id aligned with Positions; NULL in older rows
+            LocusIds                TEXT,               -- JSON array of Loci.Id aligned with Positions; NULL in older rows
+            Route                   TEXT                -- TopFirst | BottomFirst for advanced rehearsals; NULL = Position order
         );
         CREATE INDEX IF NOT EXISTS ix_rehearsalruns_room ON RehearsalRuns(RoomId);
         """;
@@ -50,9 +51,11 @@ public sealed class RehearsalStore
         {
             if (!TableExists(connection, Table)) return [];
             using var command = connection.CreateCommand();
-            var hasLocusIds = HasLocusIds(connection, null);
+            var hasLocusIds = HasColumn(connection, null, "LocusIds");
+            var hasRoute = HasColumn(connection, null, "Route");
             command.CommandText = "SELECT Id, RoomId, StartedAt, CompletedAt, DurationMs, Positions, MissesByRound, SplitsMs, " +
-                "FirstPassMissedLocusIds, BestCombo, Score, " + (hasLocusIds ? "LocusIds" : "NULL") + " FROM RehearsalRuns ORDER BY CompletedAt, Id";
+                "FirstPassMissedLocusIds, BestCombo, Score, " + (hasLocusIds ? "LocusIds" : "NULL") + ", " + (hasRoute ? "Route" : "NULL") +
+                " FROM RehearsalRuns ORDER BY CompletedAt, Id";
             using var reader = command.ExecuteReader();
             var runs = new List<RehearsalRun>();
             while (reader.Read())
@@ -66,6 +69,13 @@ public sealed class RehearsalStore
                     // A LocusIds value that does not line up with Positions is ignored, not trusted.
                     if (!reader.IsDBNull(11) && reader.GetValue(11) is string ids && Json<long[]>(ids) is { } parsed && parsed.Length == run.Positions.Count)
                         run = run with { LocusIds = parsed };
+                    // A route this version does not know is skipped: its times would not compare with anything.
+                    if (!reader.IsDBNull(12))
+                    {
+                        if (reader.GetValue(12) is not string route || !Enum.TryParse<RehearsalRoute>(route, out var parsedRoute) ||
+                            !Enum.IsDefined(parsedRoute) || !parsedRoute.IsAdvanced()) continue;
+                        run = run with { Route = parsedRoute };
+                    }
                     if (run.Positions.Count > 0 && run.MissesByRound.Count > 0) runs.Add(run);
                 }
                 catch (Exception ex) when (ex is FormatException or JsonException or InvalidCastException or InvalidOperationException) { }
@@ -90,20 +100,22 @@ public sealed class RehearsalStore
                 create.CommandText = CreateSql;
                 create.ExecuteNonQuery();
             }
-            if (!HasLocusIds(connection, transaction))
+            foreach (var column in new[] { "LocusIds", "Route" })
             {
+                if (HasColumn(connection, transaction, column)) continue;
                 using var alter = connection.CreateCommand();
                 alter.Transaction = transaction;
-                alter.CommandText = "ALTER TABLE RehearsalRuns ADD COLUMN LocusIds TEXT";
+                // Only these two fixed names are interpolated.
+                alter.CommandText = $"ALTER TABLE RehearsalRuns ADD COLUMN {column} TEXT";
                 alter.ExecuteNonQuery();
             }
             using var insert = connection.CreateCommand();
             insert.Transaction = transaction;
             insert.CommandText = """
                 INSERT INTO RehearsalRuns (RoomId, StartedAt, CompletedAt, DurationMs, LociCount, FirstPassKnown, Rounds,
-                  BestCombo, Score, Medal, Positions, MissesByRound, SplitsMs, FirstPassMissedLocusIds, LocusIds)
+                  BestCombo, Score, Medal, Positions, MissesByRound, SplitsMs, FirstPassMissedLocusIds, LocusIds, Route)
                 VALUES ($room, $started, $completed, $duration, $loci, $known, $rounds, $combo, $score, $medal,
-                  $positions, $misses, $splits, $missedIds, $locusIds);
+                  $positions, $misses, $splits, $missedIds, $locusIds, $route);
                 SELECT last_insert_rowid();
                 """;
             insert.Parameters.AddWithValue("$room", run.RoomId);
@@ -121,6 +133,7 @@ public sealed class RehearsalStore
             insert.Parameters.AddWithValue("$splits", JsonSerializer.Serialize(run.SplitsMs));
             insert.Parameters.AddWithValue("$missedIds", JsonSerializer.Serialize(run.FirstPassMissedLocusIds));
             insert.Parameters.AddWithValue("$locusIds", run.LocusIds is { } locusIds ? JsonSerializer.Serialize(locusIds) : DBNull.Value);
+            insert.Parameters.AddWithValue("$route", run.Route.IsAdvanced() ? run.Route.ToString() : DBNull.Value);
             var id = (long)insert.ExecuteScalar()!;
             transaction.Commit();
             return run with { Id = id };
@@ -199,11 +212,12 @@ public sealed class RehearsalStore
         return command.ExecuteScalar() is not null;
     }
 
-    private static bool HasLocusIds(SqliteConnection connection, SqliteTransaction? transaction)
+    private static bool HasColumn(SqliteConnection connection, SqliteTransaction? transaction, string column)
     {
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
-        command.CommandText = "SELECT 1 FROM pragma_table_info('RehearsalRuns') WHERE name = 'LocusIds'";
+        command.CommandText = "SELECT 1 FROM pragma_table_info('RehearsalRuns') WHERE name = $column";
+        command.Parameters.AddWithValue("$column", column);
         return command.ExecuteScalar() is not null;
     }
 
